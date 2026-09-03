@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>个人学习工作台 · 版本说明</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei","PingFang SC",sans-serif; color:#1f2937; margin:0; line-height:1.7; font-size:12.5px; }
+  h1 { color:#2563eb; font-size:24px; margin:0 0 4px; }
+  .sub { color:#6b7280; font-size:12px; margin-bottom:18px; }
+  .rule { background:#f1f4fa; border-left:4px solid #2563eb; border-radius:6px; padding:10px 14px; margin:14px 0 20px; font-size:12px; color:#374151; }
+  table { width:100%; border-collapse:collapse; margin-bottom:18px; }
+  th,td { border:1px solid #d7dee9; padding:9px 10px; text-align:left; vertical-align:top; }
+  th { background:#2563eb; color:#fff; font-size:12.5px; }
+  td.ver { white-space:nowrap; font-weight:700; color:#2563eb; width:130px; }
+  td.time { white-space:nowrap; color:#374151; width:140px; font-variant-numeric:tabular-nums; }
+  tr:nth-child(even) td { background:#f8fafd; }
+  .tag { display:inline-block; background:#dbeafe; color:#1d4ed8; border-radius:5px; padding:0 7px; font-size:11px; font-weight:700; margin-right:6px; }
+  ul { margin:4px 0 0; padding-left:18px; }
+  li { margin:2px 0; }
+  .foot { margin-top:22px; padding-top:10px; border-top:1px dashed #cbd5e1; color:#6b7280; font-size:11.5px; }
+  h2 { font-size:15px; color:#1f2937; margin:20px 0 8px; border-left:4px solid #2563eb; padding-left:8px; }
+</style>
+</head>
+<body>
+  <h1>个人学习工作台 · 版本说明</h1>
+  <div class="sub">单文件 HTML 个人学习工作台 ｜ 历史版本归档与改动记录 ｜ 本文档随版本迭代持续更新（覆盖更新同名 PDF）</div>
+
+  <div class="rule">
+    <b>命名规则：</b>初始版本为 <b>工作台（初始）.html</b>；此后按迭代步骤命名为
+    <b>工作台（第X.Y版）.html</b>，其中 X 为阶段、Y 为步骤（例如步骤 1-2 对应"第1.2版"，阶段二步骤 2-1 对应"第2.1版"）。
+    所有历史版本与本说明位于同一文件夹，<b>双击任意 .html 即可在浏览器独立打开</b>，可并排对比。
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>版本文件</th><th>创建时间</th><th>主要内容 / 改动</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="ver">工作台（初始）</td>
+        <td class="time">2026-09-02 20:50</td>
+        <td>
+          <span class="tag">初始版本</span>五大基础模块：
+          <ul>
+            <li><b>日历</b>：月历视图（周一起始）、今日高亮、日期计划角标、点击查看当日计划。</li>
+            <li><b>学习计划</b>：计划卡片、子任务清单、进度条与状态自动判定、"同步到日历"、统计与 JSON 导出。</li>
+            <li><b>笔记</b>：Markdown 编辑/预览（marked + DOMPurify）、标签、搜索、.md/.txt 导入与导出。</li>
+            <li><b>快捷链接</b>：分类分组、favicon 图标、搜索、分类管理。</li>
+            <li><b>知识库</b>：多级文件夹、文本新建/导入/编辑/移动/重命名/删除、全文搜索高亮。</li>
+          </ul>
+          通用：localStorage 本地存储（含异常处理）、深色/浅色主题、全局数据导入/导出、响应式布局。
+        </td>
+      </tr>
+      <tr>
+        <td class="ver">工作台（第1.1版）</td>
+        <td class="time">2026-09-03 13:00</td>
+        <td>
+          <span class="tag">1-1</span>学习计划子任务支持<b>关联笔记</b>：
+          <ul>
+            <li>子任务行 hover 显示 📎 按钮，弹窗可按标题搜索并勾选笔记（新增 <code>noteIds</code> 字段）。</li>
+            <li>已关联笔记在子任务文字下方显示为标签，点击跳转到「笔记」模块并打开对应笔记。</li>
+            <li>编辑计划保存时保留关联关系；日历日视图复用同一渲染，同步支持。</li>
+            <li>兼容旧数据：缺少 <code>noteIds</code> 时按空数组处理，不报错。</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td class="ver">工作台（第1.2版）</td>
+        <td class="time">2026-09-03 13:54</td>
+        <td>
+          <span class="tag">1-2</span>学习计划子任务支持<b>关联学习链接</b>：
+          <ul>
+            <li>子任务行在 📎 旁新增 🔗 按钮，弹窗可按名称/备注/URL 搜索并勾选「快捷链接」（新增 <code>linkIds</code> 字段）。</li>
+            <li>已关联链接显示为 🔗 名称标签，点击在新标签页直接打开；标签点击不误触发计划卡片展开。</li>
+            <li>编辑计划保存时保留关联；日历日视图同步支持；旧数据缺少 <code>linkIds</code> 时按空数组处理。</li>
+          </ul>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="foot">
+    说明：版本创建时间取自对应功能提交入库的时间（精确到分钟）。文档类提交（项目约定、路线图、历史版本归档）不单独作为工作台功能版本。
+    <br>本文档最后更新：2026-09-03。后续每次发布新版本时，在上方表格追加一行并重新导出覆盖本 PDF。
+  </div>
+</body>
+</html>
