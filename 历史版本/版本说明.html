@@ -178,6 +178,18 @@
           </ul>
         </td>
       </tr>
+          <tr>
+        <td class="ver">工作台（第1.6.4版）</td>
+        <td class="time">2026-09-03 17:01</td>
+        <td>
+          <span class="tag">缺陷修复</span><b>修正「今日」板块会跟随显示到其他模块的问题</b>：
+          <ul>
+            <li>根因：今日视图样式 <code>#view-today{display:flex...}</code> 的 ID 选择器优先级高于 <code>.view{display:none}</code>，导致切换到日历/学习计划/笔记/链接/知识库时，今日视图始终不隐藏、内容跟随出现在页面上。</li>
+            <li>修复：改为 <code>#view-today.active{display:flex...}</code>，flex 布局仅在今日视图激活时生效；切到其他模块时今日视图正确隐藏（已用无头浏览器遍历全部 tab 验证：非今日 tab 下今日视图均为 none）。</li>
+            <li>1.6.3 的单计划展开/收起、底部只读面板、✏️去编辑跳转等功能保持不变。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
