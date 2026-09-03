@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>个人学习工作台</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+/* ============ 主题变量 ============ */
+:root{
+  --bg:#f4f6fb; --surface:#ffffff; --surface-2:#f1f4fa; --border:#e2e8f2;
+  --text:#1f2937; --text-2:#6b7280; --primary:#2563eb; --primary-hover:#1d4ed8;
+  --primary-soft:#dbeafe; --danger:#dc2626; --danger-soft:#fee2e2;
+  --green:#16a34a; --green-soft:#dcfce7; --amber:#d97706; --amber-soft:#fef3c7;
+  --gray:#64748b; --gray-soft:#eef2f7;
+  --shadow:0 1px 3px rgba(16,24,40,.08),0 6px 16px rgba(16,24,40,.06);
+  --radius:14px;
+}
+[data-theme="dark"]{
+  --bg:#0e1320; --surface:#171e2e; --surface-2:#1f2840; --border:#2b3650;
+  --text:#e6eaf3; --text-2:#9aa6bf; --primary:#3b82f6; --primary-hover:#60a5fa;
+  --primary-soft:#1e3a5f; --danger:#f87171; --danger-soft:#4a1d1d;
+  --green:#4ade80; --green-soft:#14361f; --amber:#fbbf24; --amber-soft:#3d2f10;
+  --gray:#94a3b8; --gray-soft:#232d44;
+  --shadow:0 1px 3px rgba(0,0,0,.5),0 6px 16px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;
+}
+button{font-family:inherit;cursor:pointer}
+input,textarea,select{font-family:inherit;font-size:14px;color:var(--text)}
+a{color:var(--primary);text-decoration:none}
+
+/* ============ 顶部导航 ============ */
+.navbar{
+  display:flex;align-items:center;gap:16px;padding:10px 20px;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:50;flex-wrap:wrap;
+}
+.brand{font-weight:700;font-size:17px;white-space:nowrap;color:var(--primary)}
+.tabs{display:flex;gap:4px;flex:1;overflow-x:auto}
+.tab{
+  border:none;background:transparent;padding:8px 14px;border-radius:10px;
+  color:var(--text-2);white-space:nowrap;font-size:14px;
+}
+.tab:hover{background:var(--surface-2)}
+.tab.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav-actions{display:flex;gap:8px}
+.icon-btn,.btn{
+  border:1px solid var(--border);background:var(--surface);color:var(--text);
+  padding:7px 14px;border-radius:10px;font-size:13px;transition:.15s;
+}
+.icon-btn:hover,.btn:hover{border-color:var(--primary);color:var(--primary)}
+.btn-primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
+.btn-ghost{background:transparent}
+.btn-danger{color:var(--danger);border-color:var(--border);background:var(--surface)}
+.btn-danger:hover{background:var(--danger-soft);border-color:var(--danger)}
+.btn-sm{padding:4px 10px;font-size:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-2)}
+.btn-sm:hover{border-color:var(--primary);color:var(--primary)}
+.btn-sm.btn-danger:hover{border-color:var(--danger);color:var(--danger);background:var(--danger-soft)}
+.btn-sm.on{background:var(--primary-soft);color:var(--primary);border-color:var(--primary)}
+
+main{padding:18px 20px;max-width:1400px;margin:0 auto}
+.view{display:none}
+.view.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.toolbar input[type=search],.toolbar input:not([type]),.toolbar>input{flex:1;min-width:160px}
+input[type=text],input[type=search],input[type=date],input:not([type]),select,textarea{
+  background:var(--surface-2);border:1px solid var(--border);border-radius:10px;
+  padding:8px 12px;outline:none;width:100%;
+}
+input:focus,textarea:focus,select:focus{border-color:var(--primary)}
+textarea{resize:vertical;line-height:1.7}
+.empty{color:var(--text-2);text-align:center;padding:28px 10px;font-size:13px}
+.spacer{flex:1}
+
+/* ============ 通用组件 ============ */
+.badge{font-size:12px;padding:2px 10px;border-radius:999px;white-space:nowrap}
+.st-0{background:var(--gray-soft);color:var(--gray)}
+.st-1{background:var(--amber-soft);color:var(--amber)}
+.st-2{background:var(--green-soft);color:var(--green)}
+.prog{height:8px;background:var(--gray-soft);border-radius:99px;overflow:hidden;margin:6px 0 2px}
+.prog i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),#60a5fa);border-radius:99px;transition:width .3s}
+.prog-num{font-size:12px;color:var(--text-2)}
+.sub{display:flex;gap:8px;align-items:flex-start;padding:3px 0;cursor:pointer;font-size:13px}
+.sub input{margin-top:4px;width:auto}
+.sub .done{text-decoration:line-through;color:var(--text-2)}
+.row-actions{display:flex;gap:8px;margin-top:8px}
+
+/* ============ 日历 ============ */
+.cal-layout{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;align-items:start}
+.cal-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.cal-header h3{flex:1;text-align:center;font-size:16px}
+.cal-header button{min-width:34px}
+.cal-weekdays,.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cal-weekdays span{text-align:center;font-size:12px;color:var(--text-2);padding:4px 0;font-weight:600}
+.cal-cell{
+  min-height:74px;border:1px solid var(--border);border-radius:10px;padding:6px;
+  background:var(--surface-2);display:flex;flex-direction:column;gap:4px;transition:.12s;
+}
+.cal-cell:not(.blank){cursor:pointer}
+.cal-cell:not(.blank):hover{border-color:var(--primary)}
+.cal-cell.blank{background:transparent;border-color:transparent}
+.cal-cell.today{border-color:var(--primary);box-shadow:inset 0 0 0 1px var(--primary)}
+.cal-cell.selected{background:var(--primary-soft);border-color:var(--primary)}
+.cal-num{font-size:13px;font-weight:600}
+.cal-cell.today .cal-num{color:var(--primary)}
+.cal-badge{font-size:11px;color:var(--primary);font-weight:600;margin-top:auto}
+.day-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.day-head h3{flex:1;font-size:15px}
+.day-list{display:flex;flex-direction:column;gap:10px}
+.plan-item{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-2)}
+.plan-top{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.plan-title{font-weight:600;flex:1}
+
+/* ============ 学习计划 ============ */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 18px}
+.stat .num{font-size:24px;font-weight:700;color:var(--primary)}
+.stat .lbl{font-size:12px;color:var(--text-2)}
+.plan-list{display:flex;flex-direction:column;gap:12px}
+.plan-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px;cursor:pointer}
+.plan-card:hover{border-color:var(--primary)}
+.pc-head{display:flex;align-items:center;gap:10px}
+.pc-title{font-weight:600;flex:1}
+.pc-date{font-size:12px;color:var(--text-2)}
+.chev{color:var(--text-2);transition:.2s}
+.plan-card.open .chev{transform:rotate(180deg)}
+.pc-desc{color:var(--text-2);font-size:13px;margin:6px 0;white-space:pre-wrap}
+.pc-body{margin-top:10px;border-top:1px dashed var(--border);padding-top:10px}
+
+/* ============ 笔记 ============ */
+.notes-layout{display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start}
+.notes-side{display:flex;flex-direction:column;gap:10px;max-height:calc(100vh - 130px)}
+#noteList{overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.note-item{border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;background:var(--surface-2)}
+.note-item:hover{border-color:var(--primary)}
+.note-item.on{border-color:var(--primary);background:var(--primary-soft)}
+.ni-title{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ni-meta{font-size:11px;color:var(--text-2);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}
+.mini-tag{background:var(--gray-soft);border-radius:6px;padding:0 6px}
+.tag{display:inline-block;font-size:12px;padding:2px 10px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);margin:0 6px 6px 0;cursor:pointer;color:var(--text-2)}
+.tag.on{background:var(--primary-soft);color:var(--primary);border-color:var(--primary)}
+.notes-main{min-height:calc(100vh - 160px);display:flex;flex-direction:column;gap:10px}
+.ne-head{display:flex;gap:10px;flex-wrap:wrap}
+.ne-title{font-size:17px;font-weight:700;flex:2;min-width:180px}
+.ne-tags{flex:1;min-width:140px}
+.ne-bar{display:flex;gap:8px;align-items:center}
+.ne-body{flex:1;min-height:380px;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.md-preview{flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:16px;overflow:auto}
+.md-preview h1,.md-preview h2,.md-preview h3{margin:12px 0 6px}
+.md-preview p{margin:6px 0}
+.md-preview pre{background:var(--gray-soft);padding:10px;border-radius:8px;overflow:auto;margin:8px 0}
+.md-preview code{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.md-preview blockquote{border-left:3px solid var(--primary);padding-left:10px;color:var(--text-2);margin:8px 0}
+.md-preview ul,.md-preview ol{padding-left:22px;margin:6px 0}
+.md-preview table{border-collapse:collapse;margin:8px 0}
+.md-preview th,.md-preview td{border:1px solid var(--border);padding:4px 10px}
+
+/* ============ 链接 ============ */
+.link-group{margin-bottom:18px}
+.lg-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.lg-head h3{flex:1;font-size:15px}
+.lg-acts{display:flex;gap:6px}
+.link-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.link-card{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow);transition:.15s}
+.link-card:hover{border-color:var(--primary);transform:translateY(-1px)}
+.lc-main{display:flex;align-items:center;gap:10px;flex:1;min-width:0;color:var(--text)}
+.fav{width:36px;height:36px;border-radius:9px;flex-shrink:0;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--primary-soft);color:var(--primary);font-weight:700}
+.fav img{width:20px;height:20px;position:absolute;inset:0;margin:auto}
+.lc-text{min-width:0}
+.lc-name{font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lc-note{font-size:12px;color:var(--text-2);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lc-acts{display:flex;gap:2px;opacity:.5;transition:.15s}
+.link-card:hover .lc-acts{opacity:1}
+.lc-acts button{border:none;background:transparent;font-size:14px;padding:2px 4px}
+
+/* ============ 知识库 ============ */
+.kb-layout{display:grid;grid-template-columns:260px 1fr;gap:16px;align-items:start}
+.kb-side{max-height:calc(100vh - 130px);overflow-y:auto}
+.kb-side-head{display:flex;align-items:center;margin-bottom:10px;font-weight:700}
+.kb-side-head span{flex:1}
+.kb-frow{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:8px;font-size:13px}
+.kb-frow:hover{background:var(--surface-2)}
+.kb-fname{flex:1;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 4px;border-radius:6px}
+.kb-fname.on{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.kb-facts{display:none;gap:2px}
+.kb-frow:hover .kb-facts{display:flex}
+.kb-facts button{border:none;background:transparent;font-size:12px;padding:2px 3px;color:var(--text-2)}
+.kb-facts button:hover{color:var(--primary)}
+.kb-main{min-height:calc(100vh - 160px)}
+.kb-list{display:flex;flex-direction:column;gap:6px}
+.kb-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}
+.kb-row:hover{border-color:var(--primary)}
+.kb-rname{flex:1;cursor:pointer;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kb-ext{font-size:11px;background:var(--gray-soft);color:var(--text-2);border-radius:6px;padding:1px 8px}
+.kb-time{font-size:12px;color:var(--text-2)}
+.kb-acts{display:flex;gap:6px}
+.kb-file-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.kf-name{font-weight:700;flex:1}
+.kf-time{font-size:12px;color:var(--text-2)}
+.kb-body{min-height:420px;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.search-hit{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--surface-2);cursor:pointer}
+.search-hit:hover{border-color:var(--primary)}
+.search-hit .sh-path{font-size:11px;color:var(--text-2)}
+.search-hit .sh-snip{font-size:12px;color:var(--text-2);margin-top:4px;white-space:pre-wrap;max-height:60px;overflow:hidden}
+mark{background:var(--amber-soft);color:var(--amber);border-radius:3px;padding:0 2px}
+
+/* ============ 弹窗 / 提示 ============ */
+.modal-mask{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+.modal{background:var(--surface);border-radius:16px;width:100%;max-width:480px;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);animation:pop .18s ease}
+@keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+.modal-head{display:flex;align-items:center;padding:16px 18px;border-bottom:1px solid var(--border)}
+.modal-head h3{flex:1;font-size:16px}
+.modal-x{border:none;background:transparent;font-size:22px;line-height:1;color:var(--text-2)}
+.modal-body{padding:18px;overflow-y:auto}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 18px;border-top:1px solid var(--border)}
+.form{display:flex;flex-direction:column;gap:12px}
+.form label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--text-2)}
+.form .f-label{font-size:13px;color:var(--text-2)}
+.f-sub-row{display:flex;gap:8px;margin-bottom:6px}
+.confirm-msg{font-size:14px;line-height:1.8}
+#toastBox{position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--green);border-radius:10px;padding:9px 18px;box-shadow:var(--shadow);font-size:13px;opacity:0;transition:.25s}
+.toast.show{opacity:1}
+.toast.hide{opacity:0;transform:translateY(-8px)}
+.toast.error{border-left-color:var(--danger)}
+
+/* ============ 响应式 ============ */
+@media (max-width:768px){
+  .navbar{gap:10px;padding:10px 12px}
+  .tabs{order:3;width:100%;flex-basis:100%}
+  main{padding:12px}
+  .cal-layout,.notes-layout,.kb-layout{grid-template-columns:1fr}
+  .stats{grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .stat{padding:10px}
+  .stat .num{font-size:18px}
+  .cal-cell{min-height:56px}
+  .notes-side,.kb-side{max-height:none}
+  .ne-body{min-height:260px}
+}
+</style>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="brand">📘 学习工作台</div>
+  <div class="tabs">
+    <button class="tab active" data-view="calendar">📅 日历</button>
+    <button class="tab" data-view="plans">🗂 学习计划</button>
+    <button class="tab" data-view="notes">📝 笔记</button>
+    <button class="tab" data-view="links">🔗 链接</button>
+    <button class="tab" data-view="kb">📚 知识库</button>
+  </div>
+  <div class="nav-actions">
+    <button class="icon-btn" id="themeBtn" title="切换主题">🌙</button>
+    <button class="icon-btn" id="exportBtn" title="导出全部数据">⬇ 导出</button>
+    <button class="icon-btn" id="importBtn" title="导入备份">⬆ 导入</button>
+    <input type="file" id="globalFile" accept=".json,application/json" hidden>
+  </div>
+</nav>
+
+<main>
+  <!-- 日历 -->
+  <section id="view-calendar" class="view active">
+    <div class="cal-layout">
+      <div class="card">
+        <div class="cal-header">
+          <button class="btn-sm" id="calPrev">‹</button>
+          <h3 id="calTitle"></h3>
+          <button class="btn-sm" id="calNext">›</button>
+          <button class="btn-sm" id="calToday">今天</button>
+        </div>
+        <div class="cal-weekdays">
+          <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+      </div>
+      <div class="card" id="dayPanel"></div>
+    </div>
+  </section>
+
+  <!-- 学习计划 -->
+  <section id="view-plans" class="view">
+    <div class="stats" id="planStats"></div>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="planAdd">＋ 新增计划</button>
+      <button class="btn" id="planSync">🔄 同步到日历</button>
+      <button class="btn" id="planExport">⬇ 导出计划</button>
+    </div>
+    <div class="plan-list" id="planList"></div>
+  </section>
+
+  <!-- 笔记 -->
+  <section id="view-notes" class="view">
+    <div class="notes-layout">
+      <div class="card notes-side">
+        <input type="search" id="noteSearch" placeholder="🔍 按标题搜索...">
+        <div id="noteTags"></div>
+        <div class="toolbar" style="margin:0">
+          <button class="btn btn-primary btn-sm" id="noteNew" style="flex:1">＋ 新建笔记</button>
+          <button class="btn btn-sm" id="noteImportBtn">导入</button>
+          <button class="btn btn-sm" id="noteExportAll">全部导出</button>
+          <input type="file" id="noteFile" accept=".md,.txt,text/markdown,text/plain" multiple hidden>
+        </div>
+        <div id="noteList"></div>
+      </div>
+      <div class="card notes-main" id="noteEditor"></div>
+    </div>
+  </section>
+
+  <!-- 链接 -->
+  <section id="view-links" class="view">
+    <div class="toolbar">
+      <input type="search" id="linkSearch" placeholder="🔍 按名称 / 备注搜索...">
+      <button class="btn btn-primary" id="linkAdd">＋ 新增链接</button>
+    </div>
+    <div id="linkGroups"></div>
+  </section>
+
+  <!-- 知识库 -->
+  <section id="view-kb" class="view">
+    <div class="kb-layout">
+      <div class="card kb-side">
+        <div class="kb-side-head"><span>📁 文件夹</span><button class="btn-sm" id="kbFolderNew" title="新建根文件夹">＋</button></div>
+        <div id="kbTree"></div>
+      </div>
+      <div class="card kb-main">
+        <div class="toolbar">
+          <input type="search" id="kbSearch" placeholder="🔍 全文搜索（文件名 / 内容）...">
+        </div>
+        <div id="kbContent"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toastBox"></div>
+
+<script>
+'use strict';
+/* ================= 基础工具 ================= */
+const $  = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const uid = () => (crypto && crypto.randomUUID) ? crypto.randomUUID()
+  : 'id' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const pad = n => String(n).padStart(2, '0');
+function dstr(d){ return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
+const todayStr = () => dstr(new Date());
+function fmtDay(ts){ const d = new Date(ts); return dstr(d); }
+function fmtTime(ts){ const d = new Date(ts); return fmtDay(ts) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function markHL(plain, q){
+  const e = esc(plain);
+  if(!q) return e;
+  const eq = esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return e.replace(new RegExp('(' + eq + ')', 'gi'), '<mark>$1</mark>');
+}
+function download(name, text, mime){
+  const blob = new Blob([text], { type: mime || 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function readText(file){
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsText(file);
+  });
+}
+
+/* ================= 存储层（统一前缀 + 异常处理） ================= */
+const PREFIX = 'workbench_';
+const Store = {
+  get(k, def){
+    try{
+      const raw = localStorage.getItem(PREFIX + k);
+      if(raw == null) return def;
+      return JSON.parse(raw);
+    }catch(e){ console.warn('读取失败:', k, e); return def; }
+  },
+  set(k, v){
+    try{ localStorage.setItem(PREFIX + k, JSON.stringify(v)); return true; }
+    catch(e){ toast('数据保存失败：浏览器存储空间可能已满', 'error'); return false; }
+  }
+};
+
+/* ================= 全局状态 ================= */
+let plans = Store.get('plans', []);
+let notes = Store.get('notes', []);
+let links = Store.get('links', []);
+let kb    = Store.get('kb', { folders: [], files: [] });
+if(!Array.isArray(kb.folders)) kb.folders = [];
+if(!Array.isArray(kb.files))   kb.files   = [];
+let marks = Store.get('calendar_marks', {});
+
+let calY, calM, selDate;
+let expanded = new Set();
+let noteCur = null, noteSearch = '', noteTag = '', noteMode = 'edit';
+let linkSearch = '';
+let kbCur = null, kbSearch = '', kbFile = null;
+
+/* ================= Toast / Modal ================= */
+function toast(msg, type){
+  const t = document.createElement('div');
+  t.className = 'toast' + (type === 'error' ? ' error' : '');
+  t.textContent = msg;
+  $('#toastBox').appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => { t.classList.add('hide'); setTimeout(() => t.remove(), 300); }, 2200);
+}
+function openModal(title, bodyEl, opts){
+  opts = opts || {};
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = '<div class="modal">'
+    + '<div class="modal-head"><h3>' + esc(title) + '</h3><button class="modal-x" data-act="modalClose">×</button></div>'
+    + '<div class="modal-body"></div>'
+    + '<div class="modal-foot"><button class="btn btn-ghost" data-act="modalClose">' + esc(opts.cancelText || '取消') + '</button>'
+    + '<button class="btn btn-primary modal-ok">' + esc(opts.okText || '确定') + '</button></div></div>';
+  mask.querySelector('.modal-body').appendChild(bodyEl);
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener('click', e => {
+    if(e.target === mask || e.target.closest('[data-act="modalClose"]')) close();
+  });
+  mask.querySelector('.modal-ok').addEventListener('click', () => {
+    const r = opts.onOk ? opts.onOk(bodyEl) : true;
+    if(r !== false) close();
+  });
+  return { close, mask };
+}
+function confirmModal(msg, onOk){
+  const p = document.createElement('p');
+  p.className = 'confirm-msg';
+  p.textContent = msg;
+  openModal('请确认', p, { okText: '确定', onOk(){ onOk && onOk(); return true; } });
+}
+function promptModal(title, value, onOk){
+  const el = document.createElement('div');
+  el.innerHTML = '<input type="text" class="pm-input" value="' + esc(value || '') + '">';
+  const input = el.querySelector('input');
+  openModal(title, el, {
+    onOk(){
+      const v = input.value.trim();
+      if(!v){ toast('内容不能为空', 'error'); return false; }
+      onOk(v); return true;
+    }
+  });
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
+/* ================= 主题 ================= */
+function applyTheme(t){
+  document.documentElement.dataset.theme = t;
+  $('#themeBtn').textContent = t === 'dark' ? '☀️' : '🌙';
+  Store.set('theme', t);
+}
+function initTheme(){
+  const saved = Store.get('theme', null);
+  const pref = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  applyTheme(pref);
+}
+
+/* ================= 学习计划逻辑 ================= */
+function planProgress(p){
+  const t = p.subtasks.length;
+  if(!t) return 0;
+  return Math.round(p.subtasks.filter(s => s.done).length / t * 100);
+}
+function planStatus(p){
+  const t = p.subtasks.length;
+  const d = p.subtasks.filter(s => s.done).length;
+  if(t === 0 || d === 0) return '未开始';
+  if(d === t) return '已完成';
+  return '进行中';
+}
+function statusClass(st){ return st === '已完成' ? 'st-2' : st === '进行中' ? 'st-1' : 'st-0'; }
+function savePlans(){
+  Store.set('plans', plans);
+  renderPlans(); renderCalendar();
+}
+function planCardHTML(p, inDay){
+  const pct = planProgress(p), st = planStatus(p);
+  const subs = p.subtasks.map(s =>
+    '<label class="sub"><input type="checkbox" data-act="subToggle" data-plan="' + p.id + '" data-sub="' + s.id + '"' + (s.done ? ' checked' : '') + '>'
+    + '<span class="' + (s.done ? 'done' : '') + '">' + esc(s.text) + '</span></label>').join('');
+  const acts = '<div class="row-actions">'
+    + '<button class="btn-sm" data-act="planEdit" data-id="' + p.id + '">✏️ 编辑</button>'
+    + '<button class="btn-sm btn-danger" data-act="planDel" data-id="' + p.id + '">🗑 删除</button></div>';
+  if(inDay){
+    return '<div class="plan-item">'
+      + '<div class="plan-top"><span class="plan-title">' + esc(p.title) + '</span><span class="badge ' + statusClass(st) + '">' + st + '</span></div>'
+      + '<div class="prog"><i style="width:' + pct + '%"></i></div><span class="prog-num">' + pct + '%</span>'
+      + (p.desc ? '<div class="pc-desc" style="margin:4px 0">' + esc(p.desc) + '</div>' : '')
+      + '<div class="subs">' + subs + '</div>' + acts + '</div>';
+  }
+  return '<div class="plan-card ' + (expanded.has(p.id) ? 'open' : '') + '" data-act="planExpand" data-id="' + p.id + '">'
+    + '<div class="pc-head"><span class="pc-title">' + esc(p.title) + '</span>'
+    + '<span class="pc-date">📅 ' + esc(p.date) + '</span>'
+    + '<span class="badge ' + statusClass(st) + '">' + st + '</span>'
+    + '<span class="chev">▾</span></div>'
+    + (p.desc ? '<div class="pc-desc">' + esc(p.desc) + '</div>' : '')
+    + '<div class="prog"><i style="width:' + pct + '%"></i></div>'
+    + '<div class="pc-body"' + (expanded.has(p.id) ? '' : ' hidden') + '>'
+    + '<div class="subs">' + (subs || '<p class="empty" style="padding:6px">暂无子任务</p>') + '</div>'
+    + acts + '</div></div>';
+}
+function renderPlans(){
+  const total = plans.length;
+  const done = plans.filter(p => planStatus(p) === '已完成').length;
+  let ts = 0, ds = 0;
+  plans.forEach(p => { ts += p.subtasks.length; ds += p.subtasks.filter(s => s.done).length; });
+  const rate = ts ? Math.round(ds / ts * 100) : (total ? Math.round(done / total * 100) : 0);
+  $('#planStats').innerHTML =
+    '<div class="stat"><div class="num">' + total + '</div><div class="lbl">总计划数</div></div>'
+    + '<div class="stat"><div class="num">' + done + '</div><div class="lbl">已完成</div></div>'
+    + '<div class="stat"><div class="num">' + rate + '%</div><div class="lbl">整体完成率</div></div>';
+  const sorted = plans.slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  $('#planList').innerHTML = sorted.length
+    ? sorted.map(p => planCardHTML(p, false)).join('')
+    : '<p class="empty">还没有学习计划，点击「新增计划」开始吧。</p>';
+}
+function openPlanModal(id, presetDate){
+  const p = id ? plans.find(x => x.id === id) : null;
+  const el = document.createElement('div');
+  el.className = 'form';
+  el.innerHTML =
+    '<label>标题 *<input type="text" class="f-title" value="' + esc(p ? p.title : '') + '" placeholder="计划标题"></label>'
+    + '<label>描述<textarea rows="2" class="f-desc" placeholder="计划描述（可选）">' + esc(p ? p.desc : '') + '</textarea></label>'
+    + '<label>关联日期 *<input type="date" class="f-date" value="' + (p ? p.date : (presetDate || todayStr())) + '"></label>'
+    + '<div><div class="f-label">子任务</div><div class="f-subs"></div>'
+    + '<button type="button" class="btn-sm" data-act="subAdd" style="margin-top:6px">＋ 添加子任务</button></div>';
+  const box = el.querySelector('.f-subs');
+  function addRow(text, sid){
+    const row = document.createElement('div');
+    row.className = 'f-sub-row';
+    row.innerHTML = '<input type="text" class="f-sub" placeholder="子任务内容" value="' + esc(text || '') + '">'
+      + '<button type="button" class="btn-sm btn-danger" data-act="subRowDel">删除</button>';
+    if(sid) row.querySelector('.f-sub').dataset.sid = sid;
+    box.appendChild(row);
+    row.querySelector('.f-sub').focus();
+  }
+  if(p) p.subtasks.forEach(s => addRow(s.text, s.id));
+  else addRow('');
+  el.addEventListener('click', e => {
+    const a = e.target.closest('[data-act]');
+    if(!a) return;
+    if(a.dataset.act === 'subAdd'){ e.preventDefault(); addRow(''); }
+    if(a.dataset.act === 'subRowDel'){ a.closest('.f-sub-row').remove(); }
+  });
+  openModal(p ? '编辑计划' : '新增计划', el, {
+    okText: '保存',
+    onOk(){
+      const title = el.querySelector('.f-title').value.trim();
+      const date  = el.querySelector('.f-date').value;
+      const desc  = el.querySelector('.f-desc').value.trim();
+      if(!title){ toast('请填写标题', 'error'); return false; }
+      if(!date){ toast('请选择关联日期', 'error'); return false; }
+      const subs = Array.prototype.slice.call(el.querySelectorAll('.f-sub-row')).map(row => {
+        const inp = row.querySelector('.f-sub');
+        const old = inp.dataset.sid && p ? p.subtasks.find(s => s.id === inp.dataset.sid) : null;
+        return { id: inp.dataset.sid || uid(), text: inp.value.trim(), done: old ? old.done : false };
+      }).filter(s => s.text);
+      if(p){
+        p.title = title; p.desc = desc; p.date = date; p.subtasks = subs;
+      }else{
+        plans.push({ id: uid(), title, desc, date, subtasks: subs, createdAt: Date.now() });
+      }
+      savePlans();
+      toast(p ? '计划已更新' : '计划已添加');
+      return true;
+    }
+  });
+}
+function syncPlans(){
+  confirmModal('有 ' + plans.length + ' 条计划待同步，是否生成日历标记？', () => {
+    const m = {};
+    plans.forEach(p => { if(p.date) m[p.date] = (m[p.date] || 0) + 1; });
+    marks = m;
+    Store.set('calendar_marks', marks);
+    renderCalendar();
+    toast('同步成功，日历标记已更新');
+  });
+}
+
+/* ================= 日历 ================= */
+function initCal(){
+  const t = new Date();
+  calY = t.getFullYear(); calM = t.getMonth();
+  selDate = todayStr();
+}
+function renderCalendar(){
+  $('#calTitle').textContent = calY + '年' + (calM + 1) + '月';
+  const grid = $('#calGrid');
+  grid.innerHTML = '';
+  const lead = (new Date(calY, calM, 1).getDay() + 6) % 7; // 周一为起始
+  const days = new Date(calY, calM + 1, 0).getDate();
+  for(let i = 0; i < lead; i++){
+    const b = document.createElement('div');
+    b.className = 'cal-cell blank';
+    grid.appendChild(b);
+  }
+  for(let d = 1; d <= days; d++){
+    const ds = calY + '-' + pad(calM+1) + '-' + pad(d);
+    const c = document.createElement('div');
+    c.className = 'cal-cell';
+    if(ds === todayStr()) c.classList.add('today');
+    if(ds === selDate) c.classList.add('selected');
+    const n = marks[ds] || 0;
+    c.innerHTML = '<span class="cal-num">' + d + '</span>' + (n ? '<span class="cal-badge">● ' + n + '</span>' : '');
+    c.dataset.act = 'calPick';
+    c.dataset.date = ds;
+    grid.appendChild(c);
+  }
+  renderDayPanel();
+}
+function renderDayPanel(){
+  const list = plans.filter(p => p.date === selDate)
+                    .sort((a, b) => a.title.localeCompare(b.title, 'zh'));
+  let html = '<div class="day-head"><h3>📌 ' + esc(selDate) + '</h3>'
+    + '<button class="btn btn-primary btn-sm" data-act="planAdd" data-date="' + selDate + '">＋ 添加计划</button></div>';
+  html += list.length
+    ? '<div class="day-list">' + list.map(p => planCardHTML(p, true)).join('') + '</div>'
+    : '<p class="empty">当天暂无计划，点击「添加计划」开始安排。</p>';
+  $('#dayPanel').innerHTML = html;
+}
+
+/* ================= 笔记 ================= */
+function renderMd(src){
+  if(window.marked){
+    try{
+      const html = marked.parse(src || '');
+      return window.DOMPurify ? DOMPurify.sanitize(html) : html;
+    }catch(e){ /* 降级为纯文本 */ }
+  }
+  return '<pre>' + esc(src || '') + '</pre>';
+}
+function renderNoteList(){
+  const tagSet = new Set();
+  notes.forEach(n => (n.tags || []).forEach(t => tagSet.add(t)));
+  $('#noteTags').innerHTML = Array.from(tagSet).sort().map(t =>
+    '<span class="tag ' + (noteTag === t ? 'on' : '') + '" data-act="noteTag" data-tag="' + esc(t) + '">' + esc(t) + '</span>').join('');
+  const q = noteSearch.trim().toLowerCase();
+  let list = notes.filter(n =>
+    (!noteTag || (n.tags || []).includes(noteTag)) &&
+    (!q || (n.title || '').toLowerCase().includes(q)));
+  list.sort((a, b) => b.updatedAt - a.updatedAt);
+  $('#noteList').innerHTML = list.length ? list.map(n =>
+    '<div class="note-item ' + (noteCur === n.id ? 'on' : '') + '" data-act="noteOpen" data-id="' + n.id + '">'
+    + '<div class="ni-title">' + esc(n.title || '无标题') + '</div>'
+    + '<div class="ni-meta">' + fmtDay(n.updatedAt)
+    + (n.tags || []).map(t => '<span class="mini-tag">' + esc(t) + '</span>').join('') + '</div></div>').join('')
+    : '<p class="empty">暂无笔记</p>';
+}
+function renderNoteEditor(){
+  const n = notes.find(x => x.id === noteCur);
+  const box = $('#noteEditor');
+  if(!n){ box.innerHTML = '<p class="empty">选择左侧笔记，或点击「新建笔记」开始记录。</p>'; return; }
+  box.innerHTML =
+    '<div class="ne-head">'
+    + '<input class="ne-title" id="ntTitle" value="' + esc(n.title) + '" placeholder="笔记标题">'
+    + '<input class="ne-tags" id="ntTags" value="' + esc((n.tags || []).join(', ')) + '" placeholder="标签，逗号分隔"></div>'
+    + '<div class="ne-bar">'
+    + '<button class="btn-sm ' + (noteMode === 'edit' ? 'on' : '') + '" data-act="noteMode" data-mode="edit">✏️ 编辑</button>'
+    + '<button class="btn-sm ' + (noteMode === 'preview' ? 'on' : '') + '" data-act="noteMode" data-mode="preview">👁 预览</button>'
+    + '<span class="spacer"></span>'
+    + '<button class="btn-sm" data-act="noteExportOne">⬇ 导出 .md</button>'
+    + '<button class="btn-sm btn-danger" data-act="noteDel">🗑 删除</button></div>'
+    + '<textarea class="ne-body" id="ntBody" placeholder="支持 Markdown 语法..."' + (noteMode === 'preview' ? ' hidden' : '') + '>' + esc(n.content) + '</textarea>'
+    + '<div class="md-preview" id="ntPreview"' + (noteMode === 'edit' ? ' hidden' : '') + '>' + renderMd(n.content) + '</div>';
+}
+function renderNotes(){ renderNoteList(); renderNoteEditor(); }
+let noteSaveTimer = null;
+function saveNoteFromEditor(){
+  const n = notes.find(x => x.id === noteCur);
+  if(!n || !$('#ntTitle')) return;
+  n.title  = $('#ntTitle').value.trim();
+  n.tags   = $('#ntTags').value.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  n.content = $('#ntBody').value;
+  n.updatedAt = Date.now();
+  Store.set('notes', notes);
+  renderNoteList();
+}
+
+/* ================= 快捷链接 ================= */
+function faviconURL(url){
+  let host = '';
+  try{ host = new URL(url).hostname; }catch(e){}
+  return 'https://www.google.com/s2/favicons?domain=' + encodeURIComponent(host) + '&sz=64';
+}
+function renderLinks(){
+  const q = linkSearch.trim().toLowerCase();
+  const list = links.filter(l => !q || (l.name + ' ' + (l.note || '') + ' ' + l.url).toLowerCase().includes(q));
+  const cats = [];
+  const map = {};
+  list.forEach(l => {
+    const c = l.category || '未分类';
+    if(!map[c]){ map[c] = []; cats.push(c); }
+    map[c].push(l);
+  });
+  cats.sort((a, b) => (a === '未分类' ? 1 : b === '未分类' ? -1 : a.localeCompare(b, 'zh')));
+  $('#linkGroups').innerHTML = cats.length ? cats.map(c =>
+    '<div class="link-group"><div class="lg-head"><h3>📁 ' + esc(c) + '</h3>'
+    + '<div class="lg-acts">'
+    + '<button class="btn-sm" data-act="catRename" data-cat="' + esc(c) + '">重命名</button>'
+    + '<button class="btn-sm btn-danger" data-act="catDel" data-cat="' + esc(c) + '">删除分类</button>'
+    + '</div></div><div class="link-cards">' + map[c].map(l =>
+      '<div class="link-card">'
+      + '<a class="lc-main" href="' + esc(l.url) + '" target="_blank" rel="noopener noreferrer">'
+      + '<span class="fav"><span class="fav-letter">' + esc((l.name || '?')[0]) + '</span>'
+      + '<img src="' + faviconURL(l.url) + '" alt="" loading="lazy" onerror="this.remove()"></span>'
+      + '<span class="lc-text"><span class="lc-name">' + esc(l.name) + '</span>'
+      + '<span class="lc-note">' + esc(l.note || '') + '</span></span></a>'
+      + '<span class="lc-acts">'
+      + '<button data-act="linkEdit" data-id="' + l.id + '" title="编辑">✏️</button>'
+      + '<button data-act="linkDel" data-id="' + l.id + '" title="删除">🗑</button>'
+      + '</span></div>').join('') + '</div></div>').join('')
+    : '<p class="empty">没有匹配的链接，点击「新增链接」收藏常用网站。</p>';
+}
+function openLinkModal(id){
+  const l = id ? links.find(x => x.id === id) : null;
+  const cats = Array.from(new Set(links.map(x => x.category).filter(Boolean)));
+  const el = document.createElement('div');
+  el.className = 'form';
+  el.innerHTML =
+    '<label>名称 *<input type="text" class="f-name" value="' + esc(l ? l.name : '') + '" placeholder="例如：GitHub"></label>'
+    + '<label>URL *<input type="text" class="f-url" value="' + esc(l ? l.url : '') + '" placeholder="https://example.com"></label>'
+    + '<label>分类<input type="text" class="f-cat" list="catList" value="' + esc(l ? (l.category || '') : '') + '" placeholder="选择已有分类或输入新分类">'
+    + '<datalist id="catList">' + cats.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist></label>'
+    + '<label>备注<textarea rows="2" class="f-note" placeholder="备注（可选）">' + esc(l ? (l.note || '') : '') + '</textarea></label>';
+  openModal(l ? '编辑链接' : '新增链接', el, {
+    onOk(){
+      const name = el.querySelector('.f-name').value.trim();
+      let url   = el.querySelector('.f-url').value.trim();
+      const category = el.querySelector('.f-cat').value.trim();
+      const note = el.querySelector('.f-note').value.trim();
+      if(!name){ toast('请填写名称', 'error'); return false; }
+      if(!url){ toast('请填写 URL', 'error'); return false; }
+      if(!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      try{ new URL(url); }catch(e){ toast('URL 格式不正确', 'error'); return false; }
+      if(l){ Object.assign(l, { name, url, category, note }); }
+      else{ links.push({ id: uid(), name, url, category, note }); }
+      Store.set('links', links);
+      renderLinks();
+      toast(l ? '链接已更新' : '链接已添加');
+      return true;
+    }
+  });
+}
+
+/* ================= 知识库 ================= */
+function saveKb(){ Store.set('kb', kb); renderKB(); }
+function folderName(fid){
+  if(!fid) return '根目录';
+  const f = kb.folders.find(x => x.id === fid);
+  return f ? f.name : '根目录';
+}
+function renderKbTree(){
+  function node(parentId, depth){
+    return kb.folders.filter(f => f.parentId === parentId)
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
+      .map(f =>
+        '<div class="kb-frow" style="padding-left:' + (6 + depth * 14) + 'px">'
+        + '<span class="kb-fname ' + (kbCur === f.id ? 'on' : '') + '" data-act="kbOpen" data-fid="' + f.id + '">📁 ' + esc(f.name) + '</span>'
+        + '<span class="kb-facts">'
+        + '<button data-act="kbFolderAdd" data-fid="' + f.id + '" title="新建子文件夹">➕</button>'
+        + '<button data-act="kbFolderRen" data-fid="' + f.id + '" title="重命名">✏️</button>'
+        + '<button data-act="kbFolderDel" data-fid="' + f.id + '" title="删除">🗑</button>'
+        + '</span></div>' + node(f.id, depth + 1)).join('');
+  }
+  $('#kbTree').innerHTML =
+    '<div class="kb-frow"><span class="kb-fname ' + (kbCur === null ? 'on' : '') + '" data-act="kbOpen" data-fid="">🗄 根目录</span></div>'
+    + node(null, 0);
+}
+function fileRowHTML(f){
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  return '<div class="kb-row">'
+    + '<span class="kb-rname" data-act="kbOpenFile" data-id="' + f.id + '">📄 ' + esc(f.name) + '</span>'
+    + '<span class="kb-ext">' + esc(ext) + '</span>'
+    + '<span class="kb-time">' + fmtTime(f.updatedAt) + '</span>'
+    + '<span class="kb-acts">'
+    + '<button class="btn-sm" data-act="kbFileMove" data-id="' + f.id + '">移动</button>'
+    + '<button class="btn-sm" data-act="kbFileRen" data-id="' + f.id + '">重命名</button>'
+    + '<button class="btn-sm btn-danger" data-act="kbFileDel" data-id="' + f.id + '">删除</button>'
+    + '</span></div>';
+}
+function renderKB(){
+  renderKbTree();
+  const box = $('#kbContent');
+  const f = kb.files.find(x => x.id === kbFile);
+  if(f){
+    box.innerHTML =
+      '<div class="kb-file-head">'
+      + '<button class="btn-sm" data-act="kbFileBack">← 返回列表</button>'
+      + '<span class="kf-name">📄 ' + esc(f.name) + '</span>'
+      + '<span class="kf-time">' + fmtTime(f.updatedAt) + '</span></div>'
+      + '<textarea class="kb-body" id="kbBody" placeholder="文档内容...">' + esc(f.content || '') + '</textarea>';
+    return;
+  }
+  const q = kbSearch.trim();
+  if(q){
+    const ql = q.toLowerCase();
+    const hits = kb.files.filter(x =>
+      x.name.toLowerCase().includes(ql) || (x.content || '').toLowerCase().includes(ql));
+    let html = '<p style="color:var(--text-2);margin-bottom:10px">找到 ' + hits.length + ' 个匹配文件</p>';
+    html += hits.length ? hits.map(h => {
+      const inName = h.name.toLowerCase().includes(ql);
+      let snip = '';
+      if(!inName){
+        const low = (h.content || '').toLowerCase();
+        const i = low.indexOf(ql);
+        if(i >= 0){
+          const s = Math.max(0, i - 30), e = Math.min((h.content || '').length, i + q.length + 60);
+          snip = (s > 0 ? '…' : '') + h.content.slice(s, e) + (e < h.content.length ? '…' : '');
+        }
+      }
+      return '<div class="search-hit" data-act="kbOpenFile" data-id="' + h.id + '">'
+        + '<div class="sh-path">📁 ' + esc(folderName(h.folderId)) + '</div>'
+        + '<div><strong>' + markHL(h.name, q) + '</strong></div>'
+        + (snip ? '<div class="sh-snip">' + markHL(snip, q) + '</div>' : '') + '</div>';
+    }).join('') : '<p class="empty">没有匹配的文件。</p>';
+    box.innerHTML = html;
+    return;
+  }
+  const list = kb.files.filter(x => (x.folderId || null) === kbCur)
+                      .sort((a, b) => b.updatedAt - a.updatedAt);
+  box.innerHTML =
+    '<div class="toolbar" style="margin-bottom:12px">'
+    + '<strong style="flex:1">📂 ' + esc(folderName(kbCur)) + '（' + list.length + ' 个文件）</strong>'
+    + '<button class="btn btn-primary btn-sm" data-act="kbFileNew">＋ 新建文档</button>'
+    + '<button class="btn btn-sm" data-act="kbImportBtn">📥 导入文件</button>'
+    + '<input type="file" id="kbFileInput" accept=".txt,.md,.json,.csv,text/plain,text/markdown,application/json,text/csv" multiple hidden></div>'
+    + '<div class="kb-list">' + (list.length ? list.map(fileRowHTML).join('') : '<p class="empty">该文件夹暂无文件。</p>') + '</div>';
+}
+function openFolderModal(parentId, renameId){
+  const f = renameId ? kb.folders.find(x => x.id === renameId) : null;
+  promptModal(f ? '重命名文件夹' : '新建文件夹', f ? f.name : '新文件夹', name => {
+    if(f){ f.name = name; }
+    else{ kb.folders.push({ id: uid(), name, parentId: parentId || null }); }
+    saveKb();
+  });
+}
+function deleteFolder(fid){
+  const f = kb.folders.find(x => x.id === fid);
+  if(!f) return;
+  confirmModal('删除文件夹「' + f.name + '」？其中的文件将移动到根目录，不会被删除。', () => {
+    const ids = new Set([fid]);
+    let changed = true;
+    while(changed){
+      changed = false;
+      kb.folders.forEach(x => {
+        if(x.parentId && ids.has(x.parentId) && !ids.has(x.id)){ ids.add(x.id); changed = true; }
+      });
+    }
+    kb.files.forEach(x => { if(ids.has(x.folderId)) x.folderId = null; });
+    kb.folders = kb.folders.filter(x => !ids.has(x.id));
+    if(ids.has(kbCur)) kbCur = null;
+    saveKb();
+    toast('文件夹已删除');
+  });
+}
+function moveFileModal(fid){
+  const f = kb.files.find(x => x.id === fid);
+  if(!f) return;
+  const el = document.createElement('div');
+  el.innerHTML = '<select class="mv-sel"><option value="">🗄 根目录</option>'
+    + kb.folders.map(x => '<option value="' + x.id + '"' + (f.folderId === x.id ? ' selected' : '') + '>📁 ' + esc(x.name) + '</option>').join('')
+    + '</select>';
+  openModal('移动到...', el, {
+    onOk(){
+      f.folderId = el.querySelector('.mv-sel').value || null;
+      f.updatedAt = Date.now();
+      saveKb();
+      toast('已移动');
+      return true;
+    }
+  });
+}
+function importKbFiles(fileList){
+  const files = Array.prototype.slice.call(fileList);
+  if(!files.length) return;
+  const big = files.filter(f => f.size > 1024 * 1024);
+  const go = async () => {
+    for(const file of files){
+      const content = await readText(file);
+      kb.files.push({ id: uid(), name: file.name, folderId: kbCur, content, updatedAt: Date.now() });
+    }
+    Store.set('kb', kb);
+    renderKB();
+    toast('已导入 ' + files.length + ' 个文件');
+  };
+  if(big.length){
+    confirmModal('有 ' + big.length + ' 个文件超过 1MB（' + big.map(f => f.name).join('、') + '），localStorage 容量有限，可能导致保存失败。仍要导入吗？', go);
+  }else{ go(); }
+}
+
+/* ================= 全局导入 / 导出 ================= */
+function exportAll(){
+  const data = {
+    app: 'personal-workbench', version: 1, exportedAt: new Date().toISOString(),
+    plans, notes, links, kb, calendar_marks: marks
+  };
+  download('workbench-backup-' + todayStr() + '.json', JSON.stringify(data, null, 2));
+  toast('已导出全部数据');
+}
+function globalImport(file){
+  readText(file).then(text => {
+    let data;
+    try{ data = JSON.parse(text); }
+    catch(e){ toast('文件不是有效的 JSON', 'error'); return; }
+    if(typeof data !== 'object' || !data){ toast('备份文件格式不正确', 'error'); return; }
+    confirmModal('导入将覆盖当前所有模块的数据，确定继续？', () => {
+      if(Array.isArray(data.plans)){ plans = data.plans; Store.set('plans', plans); }
+      if(Array.isArray(data.notes)){ notes = data.notes; Store.set('notes', notes); }
+      if(Array.isArray(data.links)){ links = data.links; Store.set('links', links); }
+      if(data.kb && Array.isArray(data.kb.folders)){
+        kb = data.kb;
+        if(!Array.isArray(kb.files)) kb.files = [];
+        Store.set('kb', kb);
+      }
+      if(data.calendar_marks && typeof data.calendar_marks === 'object'){
+        marks = data.calendar_marks; Store.set('calendar_marks', marks);
+      }
+      noteCur = null; kbFile = null;
+      renderAll();
+      toast('导入成功，数据已恢复');
+    });
+  }).catch(() => toast('文件读取失败', 'error'));
+}
+
+/* ================= 渲染入口 ================= */
+function renderAll(){
+  renderCalendar(); renderPlans(); renderNotes(); renderLinks(); renderKB();
+}
+
+/* ================= 事件绑定 ================= */
+// Tab 切换
+$$('.tab').forEach(b => b.addEventListener('click', () => {
+  $$('.tab').forEach(x => x.classList.toggle('active', x === b));
+  $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + b.dataset.view));
+}));
+// 顶部按钮
+$('#themeBtn').addEventListener('click', () =>
+  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+$('#exportBtn').addEventListener('click', exportAll);
+$('#importBtn').addEventListener('click', () => $('#globalFile').click());
+$('#globalFile').addEventListener('change', e => { if(e.target.files[0]) globalImport(e.target.files[0]); e.target.value = ''; });
+
+// 日历
+$('#calPrev').addEventListener('click', () => { calM--; if(calM < 0){ calM = 11; calY--; } renderCalendar(); });
+$('#calNext').addEventListener('click', () => { calM++; if(calM > 11){ calM = 0; calY++; } renderCalendar(); });
+$('#calToday').addEventListener('click', () => {
+  const t = new Date(); calY = t.getFullYear(); calM = t.getMonth(); selDate = todayStr(); renderCalendar();
+});
+
+// 学习计划
+$('#planAdd').addEventListener('click', () => openPlanModal(null, selDate));
+$('#planSync').addEventListener('click', syncPlans);
+$('#planExport').addEventListener('click', () => {
+  download('plans-' + todayStr() + '.json', JSON.stringify(plans, null, 2));
+  toast('计划已导出');
+});
+
+// 笔记
+$('#noteNew').addEventListener('click', () => {
+  const n = { id: uid(), title: '', content: '', tags: [], updatedAt: Date.now() };
+  notes.push(n); Store.set('notes', notes);
+  noteCur = n.id; noteMode = 'edit';
+  renderNotes();
+  setTimeout(() => { const t = $('#ntTitle'); if(t) t.focus(); }, 50);
+});
+$('#noteImportBtn').addEventListener('click', () => $('#noteFile').click());
+$('#noteFile').addEventListener('change', async e => {
+  const files = Array.prototype.slice.call(e.target.files);
+  for(const file of files){
+    const content = await readText(file);
+    notes.push({
+      id: uid(),
+      title: file.name.replace(/\.(md|txt)$/i, ''),
+      content, tags: [], updatedAt: Date.now()
+    });
+  }
+  Store.set('notes', notes); renderNotes();
+  if(files.length) toast('已导入 ' + files.length + ' 篇笔记');
+  e.target.value = '';
+});
+$('#noteExportAll').addEventListener('click', () => {
+  download('notes-' + todayStr() + '.json', JSON.stringify(notes, null, 2));
+  toast('笔记已全部导出');
+});
+$('#noteSearch').addEventListener('input', e => { noteSearch = e.target.value; renderNoteList(); });
+$('#noteEditor').addEventListener('input', e => {
+  if(e.target.closest('#ntTitle,#ntTags,#ntBody')){
+    clearTimeout(noteSaveTimer);
+    noteSaveTimer = setTimeout(saveNoteFromEditor, 300);
+  }
+});
+
+// 链接
+$('#linkAdd').addEventListener('click', () => openLinkModal(null));
+$('#linkSearch').addEventListener('input', e => { linkSearch = e.target.value; renderLinks(); });
+
+// 知识库
+$('#kbFolderNew').addEventListener('click', () => openFolderModal(null));
+$('#kbSearch').addEventListener('input', e => { kbSearch = e.target.value; kbFile = null; renderKB(); });
+$('#kbContent').addEventListener('click', e => {
+  const b = e.target.closest('[data-act="kbImportBtn"]');
+  if(b){ const inp = $('#kbFileInput'); if(inp) inp.click(); }
+});
+$('#kbContent').addEventListener('change', e => {
+  if(e.target.id === 'kbFileInput' && e.target.files.length){
+    importKbFiles(e.target.files);
+    e.target.value = '';
+  }
+});
+let kbSaveTimer = null;
+$('#kbContent').addEventListener('input', e => {
+  if(e.target.id === 'kbBody'){
+    clearTimeout(kbSaveTimer);
+    kbSaveTimer = setTimeout(() => {
+      const f = kb.files.find(x => x.id === kbFile);
+      if(f){ f.content = e.target.value; f.updatedAt = Date.now(); Store.set('kb', kb); }
+    }, 400);
+  }
+});
+
+// 全局点击委托
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]');
+  if(!b) return;
+  const act = b.dataset.act, id = b.dataset.id;
+  switch(act){
+    case 'calPick':
+      selDate = b.dataset.date; renderCalendar(); break;
+    case 'planAdd': openPlanModal(null, b.dataset.date || selDate); break;
+    case 'planEdit': openPlanModal(id); break;
+    case 'planDel':
+      confirmModal('确定删除该计划及其子任务？', () => {
+        plans = plans.filter(p => p.id !== id);
+        expanded.delete(id);
+        savePlans(); toast('计划已删除');
+      });
+      break;
+    case 'planExpand':
+      if(expanded.has(id)) expanded.delete(id); else expanded.add(id);
+      renderPlans();
+      break;
+    case 'noteOpen':
+      noteCur = id; noteMode = 'edit'; renderNotes(); break;
+    case 'noteTag':
+      noteTag = noteTag === b.dataset.tag ? '' : b.dataset.tag; renderNoteList(); break;
+    case 'noteMode':
+      if(noteMode !== b.dataset.mode){
+        if($('#ntBody')) saveNoteFromEditor();
+        noteMode = b.dataset.mode; renderNoteEditor();
+      }
+      break;
+    case 'noteExportOne': {
+      const n = notes.find(x => x.id === noteCur);
+      if(n) download((n.title || 'note') + '.md', '# ' + n.title + '\n\n' + n.content, 'text/markdown;charset=utf-8');
+      break;
+    }
+    case 'noteDel': {
+      const n = notes.find(x => x.id === noteCur);
+      if(n) confirmModal('确定删除笔记「' + (n.title || '无标题') + '」？', () => {
+        notes = notes.filter(x => x.id !== noteCur);
+        noteCur = null; Store.set('notes', notes); renderNotes(); toast('笔记已删除');
+      });
+      break;
+    }
+    case 'linkEdit': openLinkModal(id); break;
+    case 'linkDel':
+      confirmModal('确定删除该链接？', () => {
+        links = links.filter(x => x.id !== id);
+        Store.set('links', links); renderLinks(); toast('链接已删除');
+      });
+      break;
+    case 'catRename': {
+      const old = b.dataset.cat;
+      promptModal('重命名分类', old === '未分类' ? '' : old, name => {
+        const key = old === '未分类' ? '' : old;
+        links.forEach(l => { if((l.category || '') === key) l.category = name; });
+        Store.set('links', links); renderLinks();
+      });
+      break;
+    }
+    case 'catDel': {
+      const cat = b.dataset.cat;
+      confirmModal('删除分类「' + cat + '」？该分类下的链接将移至「未分类」，不会被删除。', () => {
+        const key = cat === '未分类' ? '' : cat;
+        links.forEach(l => { if((l.category || '') === key) l.category = ''; });
+        Store.set('links', links); renderLinks(); toast('分类已删除');
+      });
+      break;
+    }
+    case 'kbOpen':
+      kbCur = b.dataset.fid || null; kbFile = null;
+      kbSearch = ''; const si = $('#kbSearch'); if(si) si.value = '';
+      renderKB();
+      break;
+    case 'kbFolderAdd': openFolderModal(b.dataset.fid); break;
+    case 'kbFolderRen': openFolderModal(null, b.dataset.fid); break;
+    case 'kbFolderDel': deleteFolder(b.dataset.fid); break;
+    case 'kbFileNew':
+      promptModal('新建文本文档', '未命名文档.txt', name => {
+        kb.files.push({ id: uid(), name, folderId: kbCur, content: '', updatedAt: Date.now() });
+        saveKb();
+      });
+      break;
+    case 'kbOpenFile': kbFile = id; renderKB(); break;
+    case 'kbFileBack': kbFile = null; renderKB(); break;
+    case 'kbFileRen': {
+      const f = kb.files.find(x => x.id === id);
+      if(f) promptModal('重命名文件', f.name, name => { f.name = name; f.updatedAt = Date.now(); saveKb(); });
+      break;
+    }
+    case 'kbFileMove': moveFileModal(id); break;
+    case 'kbFileDel': {
+      const f = kb.files.find(x => x.id === id);
+      if(f) confirmModal('确定删除文件「' + f.name + '」？此操作不可恢复。', () => {
+        kb.files = kb.files.filter(x => x.id !== id);
+        if(kbFile === id) kbFile = null;
+        saveKb(); toast('文件已删除');
+      });
+      break;
+    }
+  }
+});
+// 全局勾选委托（子任务）
+document.addEventListener('change', e => {
+  const b = e.target.closest('[data-act="subToggle"]');
+  if(!b) return;
+  const p = plans.find(x => x.id === b.dataset.plan);
+  const s = p && p.subtasks.find(x => x.id === b.dataset.sub);
+  if(s){ s.done = b.checked; savePlans(); }
+});
+
+/* ================= 启动 ================= */
+initTheme();
+initCal();
+renderAll();
+</script>
+</body>
+</html>
