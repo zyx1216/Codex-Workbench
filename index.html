@@ -93,7 +93,7 @@ textarea{resize:vertical;line-height:1.7}
 .sub-link{border:none;background:transparent;font-size:13px;padding:2px 4px;opacity:0;transition:opacity .15s;flex-shrink:0;line-height:1.4}
 .sub:hover .sub-link{opacity:1}
 .sub-tags{flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;padding-left:24px;margin-top:2px}
-.note-chip{border:1px solid var(--border);background:var(--gray-soft);color:var(--text-2);font-size:11px;border-radius:6px;padding:1px 8px;cursor:pointer}
+.note-chip{border:1px solid var(--border);background:var(--gray-soft);color:var(--text-2);font-size:11px;border-radius:6px;padding:1px 8px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:3px}
 .note-chip:hover{border-color:var(--primary);color:var(--primary)}
 .sub-label input{margin-top:4px;width:auto;flex-shrink:0}
 .sub .done{text-decoration:line-through;color:var(--text-2)}
@@ -500,11 +500,17 @@ function savePlans(){
   renderPlans(); renderCalendar();
 }
 function subTagsHTML(s){
-  const ids = Array.isArray(s.noteIds) ? s.noteIds : [];
-  const chips = ids.map(nid => notes.find(n => n.id === nid))
+  const noteIds = Array.isArray(s.noteIds) ? s.noteIds : [];
+  const linkIds = Array.isArray(s.linkIds) ? s.linkIds : [];
+  const noteChips = noteIds.map(nid => notes.find(n => n.id === nid))
     .filter(Boolean)
     .map(n => '<button type="button" class="note-chip" data-act="noteJump" data-nid="' + n.id + '">📝 ' + esc(n.title || '无标题') + '</button>')
     .join('');
+  const linkChips = linkIds.map(lid => links.find(l => l.id === lid))
+    .filter(Boolean)
+    .map(l => '<a class="note-chip" href="' + esc(l.url) + '" target="_blank" rel="noopener noreferrer" data-act="linkOpen" data-lid="' + l.id + '" title="' + esc(l.url) + '">🔗 ' + esc(l.name) + '</a>')
+    .join('');
+  const chips = noteChips + linkChips;
   return chips ? '<span class="sub-tags">' + chips + '</span>' : '';
 }
 function jumpToNote(nid){
@@ -544,12 +550,44 @@ function openSubNoteModal(planId, subId){
     }
   });
 }
+function openSubLinkModal(planId, subId){
+  const p = plans.find(x => x.id === planId);
+  const s = p && p.subtasks.find(x => x.id === subId);
+  if(!s) return;
+  const linkIds = Array.isArray(s.linkIds) ? s.linkIds.slice() : [];
+  const el = document.createElement('div');
+  el.innerHTML = '<input type="search" class="sl-search" placeholder="🔍 按名称 / 备注搜索链接..." style="margin-bottom:10px">'
+    + '<div class="sl-list" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div>';
+  function draw(){
+    const q = el.querySelector('.sl-search').value.trim().toLowerCase();
+    const list = links.filter(l => !q || (l.name + ' ' + (l.note || '') + ' ' + l.url).toLowerCase().includes(q))
+                      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh'));
+    el.querySelector('.sl-list').innerHTML = list.length ? list.map(l =>
+      '<label style="display:flex;gap:8px;align-items:center;padding:7px 9px;border:1px solid var(--border);border-radius:8px;cursor:pointer">'
+      + '<input type="checkbox" data-lid="' + l.id + '"' + (linkIds.indexOf(l.id) >= 0 ? ' checked' : '') + ' style="width:auto;margin:0">'
+      + '<span style="font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔗 ' + esc(l.name) + '</span>'
+      + (l.category ? '<span style="font-size:11px;color:var(--text-2)">' + esc(l.category) + '</span>' : '') + '</label>').join('')
+      : '<p class="empty">还没有快捷链接，请先在「链接」模块添加。</p>';
+  }
+  el.querySelector('.sl-search').addEventListener('input', draw);
+  draw();
+  openModal('关联学习链接', el, {
+    okText: '保存关联',
+    onOk(){
+      s.linkIds = Array.prototype.slice.call(el.querySelectorAll('input[data-lid]:checked')).map(i => i.dataset.lid);
+      savePlans();
+      toast('关联链接已保存');
+      return true;
+    }
+  });
+}
 function planCardHTML(p, inDay){
   const pct = planProgress(p), st = planStatus(p);
   const subs = p.subtasks.map(s =>
     '<div class="sub"><label class="sub-label"><input type="checkbox" data-act="subToggle" data-plan="' + p.id + '" data-sub="' + s.id + '"' + (s.done ? ' checked' : '') + '>'
     + '<span class="' + (s.done ? 'done' : '') + '">' + esc(s.text) + '</span></label>'
     + '<button type="button" class="sub-link" title="关联笔记" data-act="subNote" data-plan="' + p.id + '" data-sub="' + s.id + '">📎</button>'
+    + '<button type="button" class="sub-link" title="关联链接" data-act="subLink" data-plan="' + p.id + '" data-sub="' + s.id + '">🔗</button>'
     + subTagsHTML(s) + '</div>').join('');
   const acts = '<div class="row-actions">'
     + '<button class="btn-sm" data-act="planEdit" data-id="' + p.id + '">✏️ 编辑</button>'
@@ -626,7 +664,7 @@ function openPlanModal(id, presetDate){
       const subs = Array.prototype.slice.call(el.querySelectorAll('.f-sub-row')).map(row => {
         const inp = row.querySelector('.f-sub');
         const old = inp.dataset.sid && p ? p.subtasks.find(s => s.id === inp.dataset.sid) : null;
-        return { id: inp.dataset.sid || uid(), text: inp.value.trim(), done: old ? old.done : false, noteIds: old && Array.isArray(old.noteIds) ? old.noteIds : [] };
+        return { id: inp.dataset.sid || uid(), text: inp.value.trim(), done: old ? old.done : false, noteIds: old && Array.isArray(old.noteIds) ? old.noteIds : [], linkIds: old && Array.isArray(old.linkIds) ? old.linkIds : [] };
       }).filter(s => s.text);
       if(p){
         p.title = title; p.desc = desc; p.date = date; p.subtasks = subs;
@@ -1109,7 +1147,9 @@ document.addEventListener('click', e => {
       });
       break;
     case 'subNote': openSubNoteModal(b.dataset.plan, b.dataset.sub); break;
+    case 'subLink': openSubLinkModal(b.dataset.plan, b.dataset.sub); break;
     case 'noteJump': jumpToNote(b.dataset.nid); break;
+    case 'linkOpen': break;
     case 'planExpand':
       if(expanded.has(id)) expanded.delete(id); else expanded.add(id);
       renderPlans();
