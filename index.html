@@ -88,8 +88,14 @@ textarea{resize:vertical;line-height:1.7}
 .prog{height:8px;background:var(--gray-soft);border-radius:99px;overflow:hidden;margin:6px 0 2px}
 .prog i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),#60a5fa);border-radius:99px;transition:width .3s}
 .prog-num{font-size:12px;color:var(--text-2)}
-.sub{display:flex;gap:8px;align-items:flex-start;padding:3px 0;cursor:pointer;font-size:13px}
-.sub input{margin-top:4px;width:auto}
+.sub{display:flex;flex-wrap:wrap;align-items:flex-start;gap:2px 8px;padding:3px 0;font-size:13px}
+.sub-label{display:flex;gap:8px;align-items:flex-start;flex:1;min-width:0;cursor:pointer}
+.sub-link{border:none;background:transparent;font-size:13px;padding:2px 4px;opacity:0;transition:opacity .15s;flex-shrink:0;line-height:1.4}
+.sub:hover .sub-link{opacity:1}
+.sub-tags{flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;padding-left:24px;margin-top:2px}
+.note-chip{border:1px solid var(--border);background:var(--gray-soft);color:var(--text-2);font-size:11px;border-radius:6px;padding:1px 8px;cursor:pointer}
+.note-chip:hover{border-color:var(--primary);color:var(--primary)}
+.sub-label input{margin-top:4px;width:auto;flex-shrink:0}
 .sub .done{text-decoration:line-through;color:var(--text-2)}
 .row-actions{display:flex;gap:8px;margin-top:8px}
 
@@ -493,11 +499,58 @@ function savePlans(){
   Store.set('plans', plans);
   renderPlans(); renderCalendar();
 }
+function subTagsHTML(s){
+  const ids = Array.isArray(s.noteIds) ? s.noteIds : [];
+  const chips = ids.map(nid => notes.find(n => n.id === nid))
+    .filter(Boolean)
+    .map(n => '<button type="button" class="note-chip" data-act="noteJump" data-nid="' + n.id + '">📝 ' + esc(n.title || '无标题') + '</button>')
+    .join('');
+  return chips ? '<span class="sub-tags">' + chips + '</span>' : '';
+}
+function jumpToNote(nid){
+  if(!notes.find(n => n.id === nid)){ toast('关联的笔记不存在或已删除', 'error'); return; }
+  noteCur = nid; noteMode = 'edit';
+  $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.view === 'notes'));
+  $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-notes'));
+  renderNotes();
+}
+function openSubNoteModal(planId, subId){
+  const p = plans.find(x => x.id === planId);
+  const s = p && p.subtasks.find(x => x.id === subId);
+  if(!s) return;
+  const noteIds = Array.isArray(s.noteIds) ? s.noteIds.slice() : [];
+  const el = document.createElement('div');
+  el.innerHTML = '<input type="search" class="sn-search" placeholder="🔍 按标题搜索笔记..." style="margin-bottom:10px">'
+    + '<div class="sn-list" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div>';
+  function draw(){
+    const q = el.querySelector('.sn-search').value.trim().toLowerCase();
+    const list = notes.filter(n => !q || (n.title || '无标题').toLowerCase().includes(q))
+                      .sort((a, b) => b.updatedAt - a.updatedAt);
+    el.querySelector('.sn-list').innerHTML = list.length ? list.map(n =>
+      '<label style="display:flex;gap:8px;align-items:center;padding:7px 9px;border:1px solid var(--border);border-radius:8px;cursor:pointer">'
+      + '<input type="checkbox" data-nid="' + n.id + '"' + (noteIds.indexOf(n.id) >= 0 ? ' checked' : '') + ' style="width:auto;margin:0">'
+      + '<span style="font-size:13px">' + esc(n.title || '无标题') + '</span></label>').join('')
+      : '<p class="empty">还没有笔记，请先在「笔记」模块创建。</p>';
+  }
+  el.querySelector('.sn-search').addEventListener('input', draw);
+  draw();
+  openModal('关联笔记', el, {
+    okText: '保存关联',
+    onOk(){
+      s.noteIds = Array.prototype.slice.call(el.querySelectorAll('input[data-nid]:checked')).map(i => i.dataset.nid);
+      savePlans();
+      toast('关联笔记已保存');
+      return true;
+    }
+  });
+}
 function planCardHTML(p, inDay){
   const pct = planProgress(p), st = planStatus(p);
   const subs = p.subtasks.map(s =>
-    '<label class="sub"><input type="checkbox" data-act="subToggle" data-plan="' + p.id + '" data-sub="' + s.id + '"' + (s.done ? ' checked' : '') + '>'
-    + '<span class="' + (s.done ? 'done' : '') + '">' + esc(s.text) + '</span></label>').join('');
+    '<div class="sub"><label class="sub-label"><input type="checkbox" data-act="subToggle" data-plan="' + p.id + '" data-sub="' + s.id + '"' + (s.done ? ' checked' : '') + '>'
+    + '<span class="' + (s.done ? 'done' : '') + '">' + esc(s.text) + '</span></label>'
+    + '<button type="button" class="sub-link" title="关联笔记" data-act="subNote" data-plan="' + p.id + '" data-sub="' + s.id + '">📎</button>'
+    + subTagsHTML(s) + '</div>').join('');
   const acts = '<div class="row-actions">'
     + '<button class="btn-sm" data-act="planEdit" data-id="' + p.id + '">✏️ 编辑</button>'
     + '<button class="btn-sm btn-danger" data-act="planDel" data-id="' + p.id + '">🗑 删除</button></div>';
@@ -573,7 +626,7 @@ function openPlanModal(id, presetDate){
       const subs = Array.prototype.slice.call(el.querySelectorAll('.f-sub-row')).map(row => {
         const inp = row.querySelector('.f-sub');
         const old = inp.dataset.sid && p ? p.subtasks.find(s => s.id === inp.dataset.sid) : null;
-        return { id: inp.dataset.sid || uid(), text: inp.value.trim(), done: old ? old.done : false };
+        return { id: inp.dataset.sid || uid(), text: inp.value.trim(), done: old ? old.done : false, noteIds: old && Array.isArray(old.noteIds) ? old.noteIds : [] };
       }).filter(s => s.text);
       if(p){
         p.title = title; p.desc = desc; p.date = date; p.subtasks = subs;
@@ -1055,6 +1108,8 @@ document.addEventListener('click', e => {
         savePlans(); toast('计划已删除');
       });
       break;
+    case 'subNote': openSubNoteModal(b.dataset.plan, b.dataset.sub); break;
+    case 'noteJump': jumpToNote(b.dataset.nid); break;
     case 'planExpand':
       if(expanded.has(id)) expanded.delete(id); else expanded.add(id);
       renderPlans();
