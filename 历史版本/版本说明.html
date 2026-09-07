@@ -190,6 +190,19 @@
           </ul>
         </td>
       </tr>
+          <tr>
+        <td class="ver">工作台（第2.0.1版）</td>
+        <td class="time">2026-09-07 16:59</td>
+        <td>
+          <span class="tag">2.0 过渡①</span><b>布局改版：顶部导航 → 左侧侧边栏</b>：
+          <ul>
+            <li>新增固定左侧侧边栏（宽 220px、全高）：顶部品牌「📘 工作台」（18px 加粗主色）→ 纵向导航菜单（今日/日历/计划/笔记/收藏/知识库）→ 底部主题切换、导出、导入三个全宽按钮。</li>
+            <li>导航项 padding 10px 14px、圆角 10px；当前页 primary-soft 底+主色+加粗，hover surface-2。主内容区 margin-left 220px、padding 20px 24px、max-width 1400px 居中（新增 .content 包裹层）。</li>
+            <li>响应式：屏宽 &lt;768px 时侧边栏变为顶部横向条（菜单横向滚动、按钮一行），主内容 margin 归零。</li>
+            <li>仅改布局/样式，导航按钮保留原 class/data-view、三按钮保留原 id，业务逻辑与数据一行未动；原顶部 navbar 删除。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
