@@ -329,6 +329,19 @@
           </ul>
         </td>
       </tr>
+          <tr>
+        <td class="ver">工作台（第2.5.0版）</td>
+        <td class="time">2026-09-11 21:32</td>
+        <td>
+          <span class="tag">阶段二 2-2</span><b>统一 AI 调用封装 callAI</b>：
+          <ul>
+            <li>新增 <code>callAI(prompt, opts)</code>，后续 AI 功能统一走它；支持 system / temperature / maxTokens / timeout(30s) / retries(1) / showLoading / onProgress（流式预留，本版忽略）。</li>
+            <li><b>永远 resolve 不 reject</b>：成功返回 <code>{ok,text,error:null,raw}</code>，失败返回具体中文错误（Key 无效 / 地址或模型有误 / 限流 / 服务不可用 / 超时 / 网络错误 / 返回格式异常 / 未配置 / 预置即将开放），失败均 toast。</li>
+            <li>仅网络错误与超时自动重试 1 次（间隔 1 秒），401/429/5xx 等 HTTP 错误不重试；模式 A 留 <code>CREATOR_AI_CONFIG</code> 占位（不硬编码 Key）。</li>
+            <li>全局「AI 思考中…」遮罩（z-index 300 高于弹窗）带旋转动画，并发调用计数、最后一个结束才隐藏；<code>window.callAI</code> 挂到控制台便于调试。本版不含任何 AI 生成功能，设置页与测试连接保持独立。</li>
+          </ul>
+        </td>
+      </tr>
 </tbody>
   </table>
 
