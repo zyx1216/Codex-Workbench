@@ -342,6 +342,19 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">工作台（第2.6.0版）</td>
+        <td class="time">2026-09-11 22:10</td>
+        <td>
+          <span class="tag">阶段二 2-3</span><b>AI 生成计划 + 火山方舟 Agent Plan 预设</b>：
+          <ul>
+            <li>计划页工具栏新增「🤖 AI 生成计划」：输入目标、起止日期、每日可用时间和其他要求，经 <code>callAI</code> 生成结构化计划；支持 <code>```json</code> 围栏与多余文字容错解析，异常时停留输入态并提示。</li>
+            <li>生成结果先进入预览：标题与子任务可编辑、可删除/加行，可返回重新生成并保留原输入；确认后按结束日期与当前分类导入，新计划自动展开。</li>
+            <li>设置页服务商新增「火山方舟 Agent Plan」，自动填充专属接口地址（只读）、模型建议 <code>ark-code-latest</code>，并提示专属 Key 与普通 API Key 不通用；导入/备份支持该服务商且继续剔除 Key。</li>
+            <li><code>callAI</code> 超时错误文案改为按实际超时秒数显示；本版不包含 2-4 笔记摘要、2-5 周报等后续 AI 功能。</li>
+          </ul>
+        </td>
+      </tr>
 </tbody>
   </table>
 
