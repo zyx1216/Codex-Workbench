@@ -22,7 +22,7 @@ DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 
 # 应用信息
 APP_NAME = "个人工作台"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 def ensure_dirs() -> None:
