@@ -56,9 +56,16 @@ def _plan_form(session, plan: Plan | None) -> None:
                 value=plan.description if is_edit and plan.description else "",
                 height=90,
             )
+            # 编辑用计划自己的日期；新建时允许其他页面（日历）预填日期，一次性消费
+            if is_edit and plan.date:
+                default_date = plan.date
+            elif st.session_state.get("plan_preset_date"):
+                default_date = st.session_state.pop("plan_preset_date")
+            else:
+                default_date = date.today()
             plan_date = st.date_input(
                 "日期",
-                value=plan.date if is_edit and plan.date else date.today(),
+                value=default_date,
             )
 
             start_col, end_col = st.columns(2)

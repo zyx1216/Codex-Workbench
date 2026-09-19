@@ -1,7 +1,7 @@
 # 个人工作台
 
 本地单机运行的个人效率工作台，使用 Streamlit + SQLAlchemy + SQLite 重写。
-当前版本是 v1.4.0：项目骨架、AI 设置、计划、笔记、收藏和知识库模块已可用，其他业务功能后续逐步实现。
+当前版本是 v1.5.0：项目骨架、AI 设置、计划、笔记、收藏、知识库和日历模块已可用，其他业务功能后续逐步实现。
 
 ## 技术栈
 
@@ -33,7 +33,7 @@ conda run -n personal_workbench streamlit run app.py
 ## 当前页面
 
 - 📊 今日：骨架占位
-- 📅 日历：骨架占位
+- 📅 日历：已支持月视图（月份切换、分类筛选、每天最多 2 条预览）和日视图时间线（全天区 + 定时区），可跳转到计划页新增或编辑
 - 📝 计划：已支持计划新增、编辑、删除、完成切换、子任务管理、分类筛选、统计和回收站软删除
 - 📔 笔记：已支持笔记新增、编辑、删除、标签、分类筛选、标签快筛、标题/内容搜索、Markdown 预览和回收站软删除
 - 🔗 收藏：已支持链接新增、编辑、删除、URL 校验、分类筛选、名称/备注搜索、新标签页打开和回收站软删除
@@ -59,6 +59,7 @@ conda run -n personal_workbench streamlit run app.py
 | `modules/` | 各页面模块，统一暴露 `show()` 函数 |
 | `utils/db.py` | 数据库连接、建表和轻量迁移 |
 | `utils/plan_service.py` | 计划模块的查询、校验、CRUD、子任务和软删除逻辑 |
+| `utils/calendar_service.py` | 日历月历矩阵、按日分组和日视图全天/定时拆分逻辑 |
 | `utils/note_service.py` | 笔记模块的查询、标签解析、CRUD 和软删除逻辑 |
 | `utils/link_service.py` | 收藏模块的 URL 校验、查询、CRUD 和软删除逻辑 |
 | `utils/kb_service.py` | 知识库文件夹树、文档 CRUD、全文搜索和级联软删除逻辑 |
