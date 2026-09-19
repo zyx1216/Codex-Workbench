@@ -1,7 +1,7 @@
 # 个人工作台
 
 本地单机运行的个人效率工作台，使用 Streamlit + SQLAlchemy + SQLite 重写。
-当前版本是 v1.3.0：项目骨架、AI 设置、计划、笔记和收藏模块已可用，其他业务功能后续逐步实现。
+当前版本是 v1.4.0：项目骨架、AI 设置、计划、笔记、收藏和知识库模块已可用，其他业务功能后续逐步实现。
 
 ## 技术栈
 
@@ -37,7 +37,7 @@ conda run -n personal_workbench streamlit run app.py
 - 📝 计划：已支持计划新增、编辑、删除、完成切换、子任务管理、分类筛选、统计和回收站软删除
 - 📔 笔记：已支持笔记新增、编辑、删除、标签、分类筛选、标签快筛、标题/内容搜索、Markdown 预览和回收站软删除
 - 🔗 收藏：已支持链接新增、编辑、删除、URL 校验、分类筛选、名称/备注搜索、新标签页打开和回收站软删除
-- 📚 知识库：骨架占位
+- 📚 知识库：已支持多层文件夹树（新建/重命名/级联删除）、文档增删改查、跨文件夹全文搜索和回收站软删除
 - ⚙️ 设置：已支持服务商、模型名、API Key 配置和连接测试
 
 首次启动会自动创建 `data/database.db`，并建立计划、子任务、笔记、收藏、知识库、回收站相关数据表。
@@ -61,6 +61,7 @@ conda run -n personal_workbench streamlit run app.py
 | `utils/plan_service.py` | 计划模块的查询、校验、CRUD、子任务和软删除逻辑 |
 | `utils/note_service.py` | 笔记模块的查询、标签解析、CRUD 和软删除逻辑 |
 | `utils/link_service.py` | 收藏模块的 URL 校验、查询、CRUD 和软删除逻辑 |
+| `utils/kb_service.py` | 知识库文件夹树、文档 CRUD、全文搜索和级联软删除逻辑 |
 | `utils/llm_client.py` | OpenAI 兼容 AI 调用封装 |
 | `data/` | 本地运行时数据，不提交 Git |
 | `versions/` | 里程碑代码快照 |
