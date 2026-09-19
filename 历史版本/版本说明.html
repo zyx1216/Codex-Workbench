@@ -446,6 +446,19 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">Streamlit v1.3.0</td>
+        <td class="time">2026-09-19 14:21</td>
+        <td>
+          <span class="tag">Streamlit 重写</span><b>收藏模块完整 CRUD</b>：
+          <ul>
+            <li>收藏页支持新增、编辑、删除链接和分类筛选、名称/备注关键词搜索；卡片显示名称、URL、备注和分类，点击名称在新标签页打开。</li>
+            <li>新增 <code>utils/link_service.py</code>，集中处理 URL 校验、查询、创建、更新和软删除；URL 必须以 <code>http://</code> 或 <code>https://</code> 开头并能解析出网络地址，顺带拦截 <code>javascript:</code> 等危险协议，外链锚点对地址和文本都做 HTML 转义。</li>
+            <li>删除链接前把完整字段快照写入 <code>trash_items</code>（<code>item_type="link"</code>）再删除；分类沿用与计划、笔记一致的固定 7 分类。</li>
+            <li>本版不做标签、多选、分类分组重命名、favicon 和导入导出；计划、笔记、设置及其他骨架页面不受影响。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
