@@ -1,7 +1,7 @@
 # 个人工作台
 
 本地单机运行的个人效率工作台，使用 Streamlit + SQLAlchemy + SQLite 重写。
-当前版本是 v1.2.0：项目骨架、AI 设置、计划模块和笔记模块已可用，其他业务功能后续逐步实现。
+当前版本是 v1.3.0：项目骨架、AI 设置、计划、笔记和收藏模块已可用，其他业务功能后续逐步实现。
 
 ## 技术栈
 
@@ -36,7 +36,7 @@ conda run -n personal_workbench streamlit run app.py
 - 📅 日历：骨架占位
 - 📝 计划：已支持计划新增、编辑、删除、完成切换、子任务管理、分类筛选、统计和回收站软删除
 - 📔 笔记：已支持笔记新增、编辑、删除、标签、分类筛选、标签快筛、标题/内容搜索、Markdown 预览和回收站软删除
-- 🔗 收藏：骨架占位
+- 🔗 收藏：已支持链接新增、编辑、删除、URL 校验、分类筛选、名称/备注搜索、新标签页打开和回收站软删除
 - 📚 知识库：骨架占位
 - ⚙️ 设置：已支持服务商、模型名、API Key 配置和连接测试
 
@@ -45,7 +45,7 @@ conda run -n personal_workbench streamlit run app.py
 ## 数据和密钥
 
 - 运行时数据保存在项目目录的 `data/` 下，该目录已被 Git 忽略。
-- 删除计划或笔记时不会直接清空数据，会序列化为 JSON 快照写入 `trash_items` 表。
+- 删除计划、笔记或收藏链接时不会直接清空数据，会序列化为 JSON 快照写入 `trash_items` 表。
 - API Key 只保存在 Windows 凭据管理器，服务名为 `personal-workbench`。
 - `data/llm_config.json` 只保存服务商、API 地址和模型名，不保存 API Key。
 
@@ -60,6 +60,7 @@ conda run -n personal_workbench streamlit run app.py
 | `utils/db.py` | 数据库连接、建表和轻量迁移 |
 | `utils/plan_service.py` | 计划模块的查询、校验、CRUD、子任务和软删除逻辑 |
 | `utils/note_service.py` | 笔记模块的查询、标签解析、CRUD 和软删除逻辑 |
+| `utils/link_service.py` | 收藏模块的 URL 校验、查询、CRUD 和软删除逻辑 |
 | `utils/llm_client.py` | OpenAI 兼容 AI 调用封装 |
 | `data/` | 本地运行时数据，不提交 Git |
 | `versions/` | 里程碑代码快照 |
