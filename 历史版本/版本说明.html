@@ -543,6 +543,21 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">知识消化平台 v1.3.0</td>
+        <td class="time">2026-09-25 21:43</td>
+        <td>
+          <span class="tag">文件上传解析</span><b>txt / PDF / Word 上传、解析、AI 改写预览</b>：
+          <ul>
+            <li>首页「上传文件」由占位改为完整弹窗，支持点击选择和拖拽文件，明确提示支持 PDF、Word（docx）、txt 以及 20MB 大小限制；前端先校验后缀和大小，非法格式或超限文件不会发请求。</li>
+            <li>新增 <code>services/file_service.py</code>：txt 兼容 utf-8 和 gbk 编码；PDF 用 pdfplumber 逐页提取文本；Word 用 python-docx 遍历段落提取；旧版 .doc 提示不支持。文件加密、损坏、空内容或编码无法识别时返回中文错误，正文超过 10000 字自动截断并追加提示。</li>
+            <li>新增 <code>POST /api/upload-file</code>：接收 multipart 文件，先做后缀和 20MB 校验，再以时间戳加原始文件名保存到 uploads 目录，防止重名覆盖和路径穿越；随后解析正文、调用 AI 改写成小白笔记并生成标签。标签失败降级为空列表，解析或 AI 失败统一返回 code=1，不抛 500。</li>
+            <li><code>/api/upload-file</code> 只返回标题、正文、标签和保存文件名，不直接写数据库；用户在预览页确认后点「保存」才统一通过 POST /api/notes 入库，来源为「文件上传」。支持同一文件「重新生成」。</li>
+            <li>上传阶段用 XMLHttpRequest 显示真实字节进度；字节传完后切换为「解析和改写中」。新增拖拽区、进度条、上传弹窗样式，继续沿用毛玻璃、深蓝渐变和青色强调色。</li>
+            <li>本版不做 RSS、自动抓取、多文件批量上传、上传历史列表、文件清理和笔记移动；Word 仅支持 .docx。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
