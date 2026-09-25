@@ -15,3 +15,41 @@
 7. 提交仅在本地进行；**关联远程、推送等对外操作必须先征得用户同意。**
 
 > 说明：Git 只在 `commit` 时留存快照，两次提交之间的中间改动不可回溯。因此"先存档、再修改、后提交"是保证旧版不丢的关键。
+
+
+---
+
+## v2 项目（知识消化平台，FastAPI）
+
+> 自 v1.0 起，仓库根目录并存两个独立项目。旧 Streamlit 项目（个人工作台 v1.5.0）原封不动，新 FastAPI 项目放在 `v2/` 子目录。
+
+### 路径与依赖
+
+- 入口：`v2/app.py`，启动 `python -m uvicorn v2.app:app --reload --port 8000`
+- 数据库：`data/v2_database.db`，与旧 `data/database.db` 物理隔离
+- 依赖装在 `workbench` conda 环境：`fastapi`、`uvicorn[standard]`、`pydantic`、`httpx`、`beautifulsoup4`、`feedparser`、`python-multipart`、`sqlalchemy`、`openai`、`keyring`
+- `v2/requirements.txt` 列出全部依赖
+
+### 配置与密钥
+
+- API Key：keyring，服务名 `knowledge-digest`、用户名 `ai_api_key`
+- 非敏感 AI 配置：`data/ai_config.json`（不入库）
+
+### v2 路线图（追加在原工作台路线图之后）
+
+- [x] v1.0.0 知识消化平台骨架（FastAPI + 原生 HTML/JS，3 张表，4 占位 API）
+- [ ] v1.1.0 笔记 CRUD（按链接/RSS/文件输入）
+- [ ] v1.2.0 AI 改写与首页真实统计
+- [ ] v1.3.0 RSS 抓取与定时调度
+- [ ] v1.4.0 数据导入导出
+
+### v2 死规矩
+
+1. v1.0 只搭骨架，不实现任何业务（AI 改写、RSS 抓取、文件解析、笔记 CRUD 等都归后续版本）
+2. 前端用原生 HTML/CSS/JS，不引入任何前端框架
+3. 所有 API 返回统一信封 `{code, message, data}`，用 `v2/schemas.py` 的 `ApiResult.ok/fail` 构造
+4. 数据库用 SQLAlchemy ORM，不写裸 SQL
+5. JSON 字段统一用 `Text` 存 JSON 字符串
+6. 旧的 Streamlit 项目代码不删不改，`requirements.txt` 旧版本保留
+7. keyring 写入失败必须优雅降级（返回 `code=1` 业务错），不允许返回 500
+8. 注释和提交信息用中文

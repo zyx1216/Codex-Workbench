@@ -1,68 +1,31 @@
-# 个人工作台
+# 工作台
 
-本地单机运行的个人效率工作台，使用 Streamlit + SQLAlchemy + SQLite 重写。
-当前版本是 v1.5.0：项目骨架、AI 设置、计划、笔记、收藏、知识库和日历模块已可用，其他业务功能后续逐步实现。
+本地单机项目集合。仓库内目前并存两个项目：
 
-## 技术栈
+- **个人工作台（Streamlit v1.5.0）**：计划、笔记、收藏、知识库、日历。
+- **知识消化平台（FastAPI v1.0.0，`v2/` 目录）**：基于 FastAPI + 原生 HTML/JS 的新版骨架，后续用于「链接/RSS/文件 → AI 改写笔记」。
 
-- 界面：Streamlit
-- 数据库：SQLite + SQLAlchemy ORM
-- AI：OpenAI 兼容接口（豆包、火山方舟 Agent Plan 或自定义服务）
-- API Key 存储：keyring + Windows 凭据管理器
+## 项目一：个人工作台
 
-## 快速开始
+技术栈：Streamlit + SQLAlchemy + SQLite。
 
-```powershell
-# 安装依赖
+```bash
 pip install -r requirements.txt
-
-# 启动
 streamlit run app.py
 ```
 
-浏览器访问：<http://localhost:8501>
+访问 http://localhost:8501 。
 
-如果使用 Conda，也可以先创建 Python 3.11 环境：
+## 项目二：知识消化平台
 
-```powershell
-conda create -n personal_workbench python=3.11 -y
-conda run -n personal_workbench python -m pip install -r requirements.txt
-conda run -n personal_workbench streamlit run app.py
+详见 `v2/README.md`。
+
+```bash
+python -m uvicorn v2.app:app --reload --port 8000
 ```
 
-## 当前页面
+或双击 `v2/run.bat`，访问 http://localhost:8000 。
 
-- 📊 今日：骨架占位
-- 📅 日历：已支持月视图（月份切换、分类筛选、每天最多 2 条预览）和日视图时间线（全天区 + 定时区），可跳转到计划页新增或编辑
-- 📝 计划：已支持计划新增、编辑、删除、完成切换、子任务管理、分类筛选、统计和回收站软删除
-- 📔 笔记：已支持笔记新增、编辑、删除、标签、分类筛选、标签快筛、标题/内容搜索、Markdown 预览和回收站软删除
-- 🔗 收藏：已支持链接新增、编辑、删除、URL 校验、分类筛选、名称/备注搜索、新标签页打开和回收站软删除
-- 📚 知识库：已支持多层文件夹树（新建/重命名/级联删除）、文档增删改查、跨文件夹全文搜索和回收站软删除
-- ⚙️ 设置：已支持服务商、模型名、API Key 配置和连接测试
+## 约定
 
-首次启动会自动创建 `data/database.db`，并建立计划、子任务、笔记、收藏、知识库、回收站相关数据表。
-
-## 数据和密钥
-
-- 运行时数据保存在项目目录的 `data/` 下，该目录已被 Git 忽略。
-- 删除计划、笔记或收藏链接时不会直接清空数据，会序列化为 JSON 快照写入 `trash_items` 表。
-- API Key 只保存在 Windows 凭据管理器，服务名为 `personal-workbench`。
-- `data/llm_config.json` 只保存服务商、API 地址和模型名，不保存 API Key。
-
-## 目录说明
-
-| 路径 | 作用 |
-| --- | --- |
-| `app.py` | Streamlit 主入口和 7 个页面路由 |
-| `config.py` | 项目路径、版本号和目录初始化 |
-| `models/models.py` | SQLAlchemy 数据模型 |
-| `modules/` | 各页面模块，统一暴露 `show()` 函数 |
-| `utils/db.py` | 数据库连接、建表和轻量迁移 |
-| `utils/plan_service.py` | 计划模块的查询、校验、CRUD、子任务和软删除逻辑 |
-| `utils/calendar_service.py` | 日历月历矩阵、按日分组和日视图全天/定时拆分逻辑 |
-| `utils/note_service.py` | 笔记模块的查询、标签解析、CRUD 和软删除逻辑 |
-| `utils/link_service.py` | 收藏模块的 URL 校验、查询、CRUD 和软删除逻辑 |
-| `utils/kb_service.py` | 知识库文件夹树、文档 CRUD、全文搜索和级联软删除逻辑 |
-| `utils/llm_client.py` | OpenAI 兼容 AI 调用封装 |
-| `data/` | 本地运行时数据，不提交 Git |
-| `versions/` | 里程碑代码快照 |
+两份项目各自的约定分别在 `v2/` 内 README / AGENTS.md，以及旧 Streamlit 项目的 AGENTS.md 章节中维护。
