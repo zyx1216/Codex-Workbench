@@ -62,6 +62,12 @@
       <h2 class="section-title gradient-text">笔记库</h2>
       <div class="toolbar">
         <input type="text" id="notes-search" class="input" placeholder="🔍 搜索标题或内容…" />
+        <select id="notes-tag-filter" class="input">
+          <option value="">全部标签</option>
+        </select>
+        <select id="notes-category-filter" class="input">
+          <option value="">全部分类</option>
+        </select>
       </div>
       <div id="notes-list" class="notes-list"></div>
     </section>
@@ -143,6 +149,36 @@
           <button class="btn btn-primary" id="btn-save-note">💾 保存</button>
           <button class="btn btn-ghost" id="btn-regenerate">🔄 重新生成</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 笔记编辑弹窗 -->
+  <div class="modal-mask" id="edit-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="edit-modal-close" title="关闭">×</button>
+      <h3 class="modal-title">✏️ 编辑笔记</h3>
+
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input type="text" id="edit-title" class="input" />
+      </label>
+      <label class="field">
+        <span class="field-label">正文</span>
+        <textarea id="edit-content" class="input textarea" rows="14"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">标签（逗号分隔）</span>
+        <input type="text" id="edit-tags" class="input" placeholder="标签1, 标签2" />
+      </label>
+      <label class="field">
+        <span class="field-label">分类</span>
+        <select id="edit-category" class="input"></select>
+      </label>
+      <div class="modal-error" id="edit-modal-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-edit">💾 保存</button>
+        <button class="btn btn-ghost" id="btn-cancel-edit">取消</button>
       </div>
     </div>
   </div>

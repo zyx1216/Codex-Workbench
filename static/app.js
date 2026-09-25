@@ -1,9 +1,9 @@
 /* ============================================================
    知识消化平台前端逻辑（原生 JS，无框架）
-   v1.1：
-   - tab 切换、toast、数字滚动、按钮波纹（v1.0 保留）
+   - tab 切换、toast、数字滚动、按钮波纹
    - 链接弹窗：输入 → 处理中 → 预览 → 保存
-   - 笔记库：列表加载、搜索、展开详情、删除
+   - 笔记库：列表、搜索、标签/分类筛选、展开、编辑、删除
+   - 首页：真实统计数字 + 最近笔记
    ============================================================ */
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -16,9 +16,13 @@ function initTabs() {
       const target = btn.dataset.tab;
       $$(".nav-btn").forEach((b) => b.classList.toggle("active", b === btn));
       $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === target));
-      // 每次切到笔记库都重新拉列表，保证保存后数据最新
+      // 切到笔记库：拉筛选选项和列表；切回首页：刷新统计和最近笔记
       if (target === "notes") {
+        initNotesFilters();
         loadNotes();
+      } else if (target === "home") {
+        loadStats();
+        loadRecentNotes();
       }
     });
   });
@@ -68,13 +72,17 @@ async function loadStats() {
   try {
     const res = await fetchJson("/api/stats");
     const d = res.data || {};
-    const targets = [d.total_notes ?? 0, d.today_notes ?? 0, d.pending ?? 0];
+    const targets = [
+      d.total_notes ?? 0,
+      d.today_notes ?? 0,
+      d.pending_count ?? 0,
+    ];
     $$(".counter").forEach((el, i) => animateCounter(el, targets[i]));
-  } catch (_) { /* toast 逻辑不打扰首页 */ }
+  } catch (_) { /* 首页统计失败不打扰 */ }
 }
 
 /* ============ 链接弹窗 ============ */
-let pendingUrl = "";   // 本次处理的链接，重新生成时复用
+let pendingUrl = "";    // 本次处理的链接，重新生成时复用
 let previewData = null; // 预览数据，保存时提交
 
 function showStage(name) {
@@ -117,7 +125,7 @@ async function processUrl() {
     renderPreview(previewData);
     showStage("preview");
   } catch (err) {
-    // 失败回到输入阶段，在弹窗内显示原因，可直接重试
+    // 失败回到输入阶段显示原因，可直接重试
     $("#link-url-input").value = pendingUrl;
     errorBox.textContent = err.message || "处理失败，请重试";
     errorBox.hidden = false;
@@ -127,7 +135,6 @@ async function processUrl() {
 
 function renderPreview(data) {
   $("#preview-title").textContent = data.title || "无标题";
-  // 标签 chip
   const tagBox = $("#preview-tags");
   tagBox.innerHTML = "";
   (data.tags || []).forEach((tag) => {
@@ -163,9 +170,8 @@ function bindLinkModal() {
   $("#link-modal-close").addEventListener("click", closeLinkModal);
   $("#btn-process-url").addEventListener("click", processUrl);
   $("#btn-save-note").addEventListener("click", saveNote);
-  // 重新生成：用同一链接再跑一次
+  // 重新生成：同一链接再跑一次
   $("#btn-regenerate").addEventListener("click", processUrl);
-  // 输入框回车直接开始处理
   $("#link-url-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") processUrl();
   });
@@ -176,20 +182,81 @@ function bindLinkModal() {
 }
 
 
-/* ============ 笔记库 ============ */
-async function loadNotes(keyword = "") {
-  const listEl = $("#notes-list");
+/* ============ 笔记库：筛选下拉 ============ */
+let filtersReady = false;
+
+async function initNotesFilters() {
+  // 每次进入笔记库都刷新选项，保证新标签/分类可选
+  await Promise.all([fillTagFilter(), fillCategoryFilter()]);
+  filtersReady = true;
+}
+
+async function fillTagFilter() {
+  const sel = $("#notes-tag-filter");
   try {
-    const query = keyword ? `?keyword=${encodeURIComponent(keyword)}` : "";
+    const res = await fetchJson("/api/tags");
+    const tags = res.data || [];
+    const current = sel.value;
+    sel.innerHTML = '<option value="">全部标签</option>';
+    tags.forEach((tag) => {
+      const opt = document.createElement("option");
+      opt.value = tag.name;
+      opt.textContent = `${tag.name}（${tag.count}）`;
+      sel.appendChild(opt);
+    });
+    // 保留之前的筛选选择（若该标签还在）
+    if (current) sel.value = current;
+  } catch (_) { /* 标签加载失败不阻塞页面 */ }
+}
+
+async function fillCategoryFilter() {
+  const sel = $("#notes-category-filter");
+  try {
+    const res = await fetchJson("/api/categories");
+    const categories = res.data || [];
+    const current = sel.value;
+    sel.innerHTML = '<option value="">全部分类</option>';
+    categories.forEach((cat) => {
+      const opt = document.createElement("option");
+      opt.value = cat.name;
+      opt.textContent = `${cat.name}（${cat.count}）`;
+      sel.appendChild(opt);
+    });
+    if (current) sel.value = current;
+  } catch (_) { /* 分类加载失败不阻塞页面 */ }
+}
+
+function currentFilters() {
+  return {
+    keyword: $("#notes-search").value.trim(),
+    tag: $("#notes-tag-filter").value,
+    category: $("#notes-category-filter").value,
+  };
+}
+
+function bindNotesFilters() {
+  $("#notes-tag-filter").addEventListener("change", loadNotes);
+  $("#notes-category-filter").addEventListener("change", loadNotes);
+}
+
+/* ============ 笔记库：列表 ============ */
+async function loadNotes() {
+  const listEl = $("#notes-list");
+  const f = currentFilters();
+  const params = new URLSearchParams();
+  if (f.keyword) params.set("keyword", f.keyword);
+  if (f.tag) params.set("tag", f.tag);
+  if (f.category) params.set("category", f.category);
+  const query = params.toString() ? `?${params.toString()}` : "";
+
+  try {
     const res = await fetchJson(`/api/notes${query}`);
-    const items = res.data.items || [];
-    renderNotes(items);
+    renderNotes(res.data.items || []);
   } catch (err) {
-    // 列表区直接显示错误，不再弹 toast 重复打扰
     listEl.innerHTML = "";
     const card = document.createElement("div");
     card.className = "card glass empty";
-    card.innerHTML = `<p>笔记加载失败：${escapeHtml(err.message)}</p>`;
+    card.textContent = `笔记加载失败：${err.message}`;
     listEl.appendChild(card);
   }
 }
@@ -202,31 +269,32 @@ function renderNotes(items) {
     empty.className = "card glass empty";
     empty.innerHTML = `
       <div class="empty-icon">📝</div>
-      <p>暂无笔记</p>
-      <p class="hint">回首页点「输入链接」，生成第一篇笔记</p>`;
+      <p>暂无笔记，去首页输入链接生成第一篇吧</p>`;
     listEl.appendChild(empty);
     return;
   }
   items.forEach((note) => listEl.appendChild(buildNoteCard(note)));
 }
 
+
 function buildNoteCard(note) {
   const card = document.createElement("div");
   card.className = "card glass note-card";
+  card.dataset.noteId = note.id;
 
-  // 卡片头部：标题、标签、时间；点卡片任意位置展开
+  // 卡片头部：标题、分类、来源、时间；点头部展开
   const head = document.createElement("div");
   head.className = "note-head";
-  const timeText = formatTime(note.created_at);
   head.innerHTML = `
     <div class="note-title">${escapeHtml(note.title || "无标题")}</div>
     <div class="note-meta">
+      <span class="note-category">📁 ${escapeHtml(note.category || "默认")}</span>
       <span class="note-source">${escapeHtml(note.source || "手动输入")}</span>
-      <span class="note-time">${timeText}</span>
+      <span class="note-time">${formatTime(note.created_at)}</span>
     </div>`;
   card.appendChild(head);
 
-  // 标签 chip
+  // 标签 chip（nth-child 由 CSS 轮换色调）
   if (note.tags && note.tags.length) {
     const chipRow = document.createElement("div");
     chipRow.className = "chip-row";
@@ -239,7 +307,7 @@ function buildNoteCard(note) {
     card.appendChild(chipRow);
   }
 
-  // 展开区：正文 + 原文链接 + 删除按钮，默认隐藏
+  // 展开区：正文 + 操作按钮（原文链接/编辑/删除），默认隐藏
   const detail = document.createElement("div");
   detail.className = "note-detail";
   detail.hidden = true;
@@ -259,17 +327,29 @@ function buildNoteCard(note) {
     link.textContent = "🔗 查看原文";
     detailActions.appendChild(link);
   }
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "btn btn-ghost btn-sm";
+  editBtn.textContent = "✏️ 编辑";
+  detailActions.appendChild(editBtn);
+
   const delBtn = document.createElement("button");
   delBtn.className = "btn btn-danger btn-sm";
   delBtn.textContent = "🗑 删除";
   detailActions.appendChild(delBtn);
+
   detail.appendChild(detailActions);
   card.appendChild(detail);
 
-  // 点头部或标签区展开/收起
+  // 点头部展开/收起
   head.addEventListener("click", () => {
     detail.hidden = !detail.hidden;
     card.classList.toggle("expanded", !detail.hidden);
+  });
+
+  editBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openEditModal(note);
   });
 
   delBtn.addEventListener("click", async (e) => {
@@ -279,8 +359,8 @@ function buildNoteCard(note) {
       await fetchJson(`/api/notes/${note.id}`, { method: "DELETE" });
       card.remove();
       toast("笔记已删除", "success");
-      // 删完若列表空了，刷新出空状态
-      if ($("#notes-list").children.length === 0) loadNotes();
+      // 删完列表空了就刷出空状态
+      if (!$("#notes-list").children.length) loadNotes();
     } catch (err) {
       toast(err.message || "删除失败", "error");
     }
@@ -289,13 +369,157 @@ function buildNoteCard(note) {
   return card;
 }
 
+
+/* ============ 编辑弹窗 ============ */
+let editingNote = null;
+
+async function openEditModal(note) {
+  editingNote = note;
+  const errorBox = $("#edit-modal-error");
+  errorBox.hidden = true;
+
+  // 预填当前数据
+  $("#edit-title").value = note.title || "";
+  $("#edit-content").value = note.content || "";
+  $("#edit-tags").value = tagsToText(note.tags || []);
+
+  // 分类下拉：用聚合分类填选项，保证当前分类必在其中
+  const catSel = $("#edit-category");
+  catSel.innerHTML = "";
+  try {
+    const res = await fetchJson("/api/categories");
+    (res.data || []).forEach((cat) => {
+      const opt = document.createElement("option");
+      opt.value = cat.name;
+      opt.textContent = cat.name;
+      catSel.appendChild(opt);
+    });
+  } catch (_) { /* 分类加载失败继续，至少保证当前分类可选 */ }
+  if (!Array.from(catSel.options).some((o) => o.value === note.category)) {
+    const opt = document.createElement("option");
+    opt.value = note.category;
+    opt.textContent = note.category;
+    catSel.appendChild(opt);
+  }
+  catSel.value = note.category;
+
+  $("#edit-modal").hidden = false;
+}
+
+function closeEditModal() {
+  $("#edit-modal").hidden = true;
+  editingNote = null;
+}
+
+async function saveEdit() {
+  if (!editingNote) return;
+  const btn = $("#btn-save-edit");
+  btn.disabled = true;
+  const payload = {
+    title: $("#edit-title").value.trim(),
+    content: $("#edit-content").value,
+    tags: parseTagsText($("#edit-tags").value),
+    category: $("#edit-category").value,
+  };
+  try {
+    await fetchJson(`/api/notes/${editingNote.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    toast("笔记已更新", "success");
+    closeEditModal();
+    // 重拉列表，保证卡片实时更新
+    loadNotes();
+  } catch (err) {
+    const errorBox = $("#edit-modal-error");
+    errorBox.textContent = err.message || "保存失败";
+    errorBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function bindEditModal() {
+  $("#edit-modal-close").addEventListener("click", closeEditModal);
+  $("#btn-cancel-edit").addEventListener("click", closeEditModal);
+  $("#btn-save-edit").addEventListener("click", saveEdit);
+  // 点遮罩空白处关闭
+  $("#edit-modal").addEventListener("click", (e) => {
+    if (e.target === $("#edit-modal")) closeEditModal();
+  });
+}
+
+
+/* ============ 标签工具（浏览器端，与服务端切分规则一致） ============ */
+function parseTagsText(text) {
+  const result = [];
+  (text || "").split(/[,，]/).forEach((part) => {
+    const tag = part.trim();
+    if (tag && !result.includes(tag)) result.push(tag);
+  });
+  return result;
+}
+
+function tagsToText(tags) {
+  return (tags || []).join(", ");
+}
+
+/* ============ 搜索防抖 500ms ============ */
 function bindNotesSearch() {
   let timer = null;
   $("#notes-search").addEventListener("input", (e) => {
     clearTimeout(timer);
-    timer = setTimeout(() => loadNotes(e.target.value.trim()), 300);
+    timer = setTimeout(() => loadNotes(), 500);
   });
 }
+
+/* ============ 首页：最近笔记 ============ */
+async function loadRecentNotes() {
+  const box = $("#recent-notes");
+  try {
+    const res = await fetchJson("/api/notes?size=5");
+    const items = res.data.items || [];
+    box.innerHTML = "";
+    if (items.length === 0) {
+      // 无笔记：恢复空状态
+      box.className = "card glass empty";
+      box.innerHTML = `
+        <div class="empty-icon">📭</div>
+        <p>暂无笔记</p>
+        <p class="hint">添加链接或上传文件后，这里会显示最近的 5 条</p>`;
+      return;
+    }
+    box.className = "recent-list";
+    items.forEach((note) => {
+      const row = document.createElement("div");
+      row.className = "recent-item";
+      row.innerHTML = `
+        <span class="recent-title">${escapeHtml(note.title || "无标题")}</span>
+        <span class="recent-time">${formatTime(note.created_at)}</span>`;
+      // 点击切到笔记库并展开对应笔记
+      row.addEventListener("click", () => goToNote(note.id));
+      box.appendChild(row);
+    });
+  } catch (_) { /* 最近笔记加载失败保持空状态 */ }
+}
+
+async function goToNote(noteId) {
+  // 切到笔记库
+  $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === "notes"));
+  $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "notes"));
+  await initNotesFilters();
+  await loadNotes();
+  // 展开对应卡片
+  const card = $(`.note-card[data-note-id="${noteId}"]`);
+  if (card) {
+    const detail = $(".note-detail", card);
+    detail.hidden = false;
+    card.classList.add("expanded");
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
 
 /* ============ 小工具 ============ */
 function escapeHtml(text) {
@@ -311,7 +535,6 @@ function formatTime(iso) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-
 
 /* ============ 设置页：配置读写 ============ */
 async function loadConfig() {
@@ -343,7 +566,7 @@ async function saveConfig() {
 async function testConnection() {
   try {
     const res = await fetchJson("/api/ai-test", { method: "POST" });
-    toast(res.message || "测试完成", res.code === 0 ? "info" : "warning");
+    toast(res.message || "测试完成", "info");
   } catch (_) { /* ignore */ }
 }
 
@@ -383,10 +606,13 @@ function bindRipple() {
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   bindLinkModal();
+  bindNotesFilters();
   bindNotesSearch();
+  bindEditModal();
   bindSettings();
   bindUploadAction();
   bindRipple();
   loadStats();
+  loadRecentNotes();
   loadConfig();
 });

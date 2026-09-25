@@ -55,6 +55,15 @@ class NoteCreateRequest(BaseModel):
     category: str = "默认"
 
 
+class NoteUpdateRequest(BaseModel):
+    """笔记更新请求体：标题、正文、标签、分类。"""
+
+    title: str = ""
+    content: str = ""
+    tags: list[str] = []
+    category: str = "默认"
+
+
 def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
     """统一成功响应信封。"""
     return {"code": 0, "message": message, "data": data}
@@ -68,9 +77,9 @@ def index() -> FileResponse:
 
 
 @app.get("/api/stats")
-def get_stats():
-    """首页概览（v1.1 仍保持占位，v1.2 接真实统计）。"""
-    return ok({"total_notes": 0, "today_notes": 0, "pending": 0})
+def get_stats(db: Session = Depends(get_db)):
+    """首页概览：真实统计数据。"""
+    return ok(note_service.get_stats(db))
 
 
 @app.get("/api/ai-config")
@@ -142,13 +151,15 @@ def create_note(payload: NoteCreateRequest, db: Session = Depends(get_db)):
 @app.get("/api/notes")
 def list_notes(
     keyword: str = Query(default=""),
+    tag: str = Query(default=""),
+    category: str = Query(default=""),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """笔记列表：支持关键词、分页，按创建时间倒序。"""
+    """笔记列表：支持关键词、标签、分类过滤和分页，按创建时间倒序。"""
     items, total = note_service.list_notes(
-        db, keyword=keyword, page=page, size=size
+        db, keyword=keyword, tag=tag, category=category, page=page, size=size
     )
     return ok({
         "items": [note_service.serialize_note(note) for note in items],
@@ -176,6 +187,36 @@ def delete_note(note_id: int, db: Session = Depends(get_db)):
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(None, message="笔记已删除")
+
+
+# ============ v1.2：标签、分类、笔记更新 ============
+@app.get("/api/tags")
+def get_tags(db: Session = Depends(get_db)):
+    """全部标签及数量。"""
+    return ok(note_service.all_tags(db))
+
+
+@app.get("/api/categories")
+def get_categories(db: Session = Depends(get_db)):
+    """全部分类及数量。"""
+    return ok(note_service.all_categories(db))
+
+
+@app.put("/api/notes/{note_id}")
+def update_note(note_id: int, payload: NoteUpdateRequest, db: Session = Depends(get_db)):
+    """更新笔记标题、正文、标签、分类。"""
+    try:
+        note = note_service.update_note(
+            session=db,
+            note_id=note_id,
+            title=payload.title,
+            content=payload.content,
+            tags=payload.tags,
+            category=payload.category,
+        )
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(note_service.serialize_note(note), message="笔记已更新")
 
 
 # 静态资源（CSS / JS）放在 /static 下，需在所有路由之后挂载
