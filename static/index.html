@@ -183,6 +183,56 @@
     </div>
   </div>
 
+  <!-- 文件上传弹窗 -->
+  <div class="modal-mask" id="upload-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="upload-modal-close" title="关闭">×</button>
+
+      <!-- 选择阶段 -->
+      <div class="upload-stage" id="upload-stage-select">
+        <h3 class="modal-title">📤 上传文件</h3>
+        <p class="modal-desc">支持 PDF、Word（docx）和 txt，单个文件最大 20MB。</p>
+
+        <div class="dropzone" id="upload-dropzone" role="button" tabindex="0">
+          <div class="dropzone-icon">📄</div>
+          <p><strong>点击选择文件</strong>，或拖拽到这里</p>
+          <p class="hint">上传后会自动解析正文并改写成通俗笔记</p>
+        </div>
+        <input type="file" id="upload-file-input" hidden
+               accept=".txt,.pdf,.docx" />
+
+        <div class="selected-file" id="selected-file" hidden>
+          <span id="selected-file-name"></span>
+        </div>
+        <div class="modal-error" id="upload-modal-error" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-start-upload" disabled>开始上传</button>
+        </div>
+      </div>
+
+      <!-- 处理阶段 -->
+      <div class="upload-stage" id="upload-stage-processing" hidden>
+        <h3 class="modal-title">正在处理文件</h3>
+        <p class="selected-file-name" id="processing-file-name"></p>
+        <div class="progress-track">
+          <div class="progress-bar" id="upload-progress-bar"></div>
+        </div>
+        <p class="progress-text" id="upload-progress-text">准备上传…</p>
+      </div>
+
+      <!-- 预览阶段 -->
+      <div class="upload-stage" id="upload-stage-preview" hidden>
+        <h3 class="modal-title" id="upload-preview-title"></h3>
+        <div class="chip-row" id="upload-preview-tags"></div>
+        <div class="preview-content" id="upload-preview-content"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-upload">💾 保存</button>
+          <button class="btn btn-ghost" id="btn-reupload">🔄 重新生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast-host"></div>
 
   <script src="/static/app.js"></script>

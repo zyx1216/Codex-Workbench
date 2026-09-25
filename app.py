@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v1.1 · FastAPI 主入口。
+知识消化平台 v1.3 · FastAPI 主入口。
 
 - 启动时初始化数据目录和 SQLite 表
 - 挂载 /static 提供前端资源
@@ -8,17 +8,18 @@
 - 根路径返回单页应用入口 index.html
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config
-from services import ai_service, crawler_service, note_service
+from services import ai_service, crawler_service, file_service, note_service
 from services.db import get_db, init_db
 
 # 启动时确保表就绪（幂等）
@@ -129,6 +130,52 @@ def process_url(payload: ProcessUrlRequest):
         "content": rewritten,
         "tags": tags,
         "original_url": final_url,
+    })
+
+
+# ============ v1.3：文件上传解析 ============
+# 文件大小上限 20MB
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+
+
+@app.post("/api/upload-file")
+async def upload_file(file: UploadFile = File(...)):
+    """保存上传文件、解析正文并 AI 改写，返回预览数据（本端点不写库）。"""
+    # 只取文件名，防止客户端传入带路径的文件名造成路径穿越
+    safe_name = Path(file.filename or "").name
+    if not safe_name:
+        return {"code": 1, "message": "未获取到文件名", "data": None}
+
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in file_service.ALLOWED_SUFFIXES:
+        return {"code": 1,
+                "message": "不支持的文件格式，仅支持 PDF、Word（docx）和 txt",
+                "data": None}
+
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_SIZE:
+        return {"code": 1, "message": "文件超过 20MB 大小限制", "data": None}
+
+    # 文件名加时间戳，避免重名覆盖
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    saved_name = f"{timestamp}_{safe_name}"
+    saved_path = config.UPLOAD_DIR / saved_name
+    saved_path.write_bytes(data)
+
+    try:
+        parsed = file_service.parse_file(saved_path, safe_name)
+        rewritten = ai_service.rewrite_to_plain(
+            parsed["title"], parsed["content"]
+        )
+        tags = ai_service.generate_tags(parsed["title"], parsed["content"])
+    except (file_service.FileParseError, ai_service.AiError) as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+
+    return ok({
+        "title": parsed["title"],
+        "content": rewritten,
+        "tags": tags,
+        "original_url": saved_name,
     })
 
 

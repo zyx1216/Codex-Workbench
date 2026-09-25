@@ -7,3 +7,5 @@ httpx
 beautifulsoup4
 feedparser
 python-multipart
+pdfplumber
+python-docx

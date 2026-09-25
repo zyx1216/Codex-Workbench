@@ -3,6 +3,7 @@
    - tab 切换、toast、数字滚动、按钮波纹
    - 链接弹窗：输入 → 处理中 → 预览 → 保存
    - 笔记库：列表、搜索、标签/分类筛选、展开、编辑、删除
+   - 文件上传：拖拽/选择、进度、预览、保存
    - 首页：真实统计数字 + 最近笔记
    ============================================================ */
 
@@ -536,6 +537,194 @@ function formatTime(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/* ============ 文件上传弹窗 ============ */
+const UPLOAD_ALLOWED_EXT = [".txt", ".pdf", ".docx"];
+const UPLOAD_MAX_SIZE = 20 * 1024 * 1024;
+let selectedUploadFile = null;
+let uploadPreview = null;
+
+function showUploadStage(name) {
+  $$(".upload-stage").forEach((stage) => {
+    stage.hidden = stage.id !== `upload-stage-${name}`;
+  });
+}
+
+function openUploadModal() {
+  selectedUploadFile = null;
+  uploadPreview = null;
+  $("#upload-file-input").value = "";
+  $("#selected-file").hidden = true;
+  $("#upload-modal-error").hidden = true;
+  $("#btn-start-upload").disabled = true;
+  $("#upload-progress-bar").style.width = "0";
+  showUploadStage("select");
+  $("#upload-modal").hidden = false;
+}
+
+function closeUploadModal() {
+  $("#upload-modal").hidden = true;
+}
+
+function validateUploadFile(file) {
+  const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  if (!UPLOAD_ALLOWED_EXT.includes(ext)) {
+    return "不支持的文件格式，仅支持 PDF、Word（docx）和 txt";
+  }
+  if (file.size > UPLOAD_MAX_SIZE) {
+    return "文件超过 20MB 大小限制";
+  }
+  return "";
+}
+
+function pickUploadFile(file) {
+  const errorBox = $("#upload-modal-error");
+  errorBox.hidden = true;
+  const error = validateUploadFile(file);
+  if (error) {
+    errorBox.textContent = error;
+    errorBox.hidden = false;
+    selectedUploadFile = null;
+    $("#btn-start-upload").disabled = true;
+    return;
+  }
+  selectedUploadFile = file;
+  $("#selected-file-name").textContent = file.name;
+  $("#selected-file").hidden = false;
+  $("#btn-start-upload").disabled = false;
+}
+
+function uploadSelectedFile() {
+  if (!selectedUploadFile) return;
+  const progressBar = $("#upload-progress-bar");
+  const progressText = $("#upload-progress-text");
+  $("#processing-file-name").textContent = selectedUploadFile.name;
+  progressBar.style.width = "0";
+  progressText.textContent = "正在上传…";
+  showUploadStage("processing");
+
+  const formData = new FormData();
+  formData.append("file", selectedUploadFile);
+  const xhr = new XMLHttpRequest();
+  let uploadBytesFinished = false;
+
+  xhr.upload.onprogress = (event) => {
+    if (!event.lengthComputable) return;
+    const percent = Math.round((event.loaded / event.total) * 100);
+    progressBar.style.width = `${percent}%`;
+    progressText.textContent = `正在上传：${percent}%`;
+  };
+  xhr.upload.onload = () => {
+    uploadBytesFinished = true;
+    progressBar.style.width = "100%";
+    progressText.textContent = "上传完成，正在解析和改写…";
+  };
+
+  xhr.onreadystatechange = () => {
+    if (xhr.readyState !== XMLHttpRequest.DONE) return;
+    let body = null;
+    try { body = JSON.parse(xhr.responseText); } catch (_) { /* 非 JSON 按失败处理 */ }
+
+    if (xhr.status < 200 || xhr.status >= 300 || !body || body.code !== 0) {
+      const message = body?.message || `上传失败（${xhr.status || "网络错误"}）`;
+      const errorBox = $("#upload-modal-error");
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+      showUploadStage("select");
+      return;
+    }
+
+    uploadPreview = { ...body.data, source: "文件上传" };
+    renderUploadPreview(uploadPreview);
+    showUploadStage("preview");
+  };
+
+  xhr.onerror = () => {
+    const errorBox = $("#upload-modal-error");
+    errorBox.textContent = "网络连接失败，请确认服务正在运行";
+    errorBox.hidden = false;
+    showUploadStage("select");
+  };
+
+  xhr.open("POST", "/api/upload-file");
+  xhr.send(formData);
+  // 解析和 AI 改写耗时无法按字节估算；字节传完后由 upload.onload 切文案
+  if (uploadBytesFinished) {
+    progressText.textContent = "上传完成，正在解析和改写…";
+  }
+}
+
+function renderUploadPreview(data) {
+  $("#upload-preview-title").textContent = data.title || "无标题";
+  const tagBox = $("#upload-preview-tags");
+  tagBox.innerHTML = "";
+  (data.tags || []).forEach((tag) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = tag;
+    tagBox.appendChild(chip);
+  });
+  $("#upload-preview-content").textContent = data.content || "";
+}
+
+async function saveUploadNote() {
+  if (!uploadPreview) return;
+  const btn = $("#btn-save-upload");
+  btn.disabled = true;
+  try {
+    await fetchJson("/api/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(uploadPreview),
+    });
+    toast("已保存到笔记库", "success");
+    closeUploadModal();
+  } catch (err) {
+    toast(err.message || "保存失败", "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function bindUploadModal() {
+  $('[data-action="upload"]').addEventListener("click", openUploadModal);
+  $("#upload-modal-close").addEventListener("click", closeUploadModal);
+  $("#btn-start-upload").addEventListener("click", uploadSelectedFile);
+  $("#btn-save-upload").addEventListener("click", saveUploadNote);
+  $("#btn-reupload").addEventListener("click", uploadSelectedFile);
+
+  const dropzone = $("#upload-dropzone");
+  const fileInput = $("#upload-file-input");
+  dropzone.addEventListener("click", () => fileInput.click());
+  dropzone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") fileInput.click();
+  });
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files[0]) pickUploadFile(fileInput.files[0]);
+  });
+
+  ["dragenter", "dragover"].forEach((name) => {
+    dropzone.addEventListener(name, (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((name) => {
+    dropzone.addEventListener(name, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+    });
+  });
+  dropzone.addEventListener("drop", (e) => {
+    const file = e.dataTransfer.files[0];
+    if (file) pickUploadFile(file);
+  });
+
+  $("#upload-modal").addEventListener("click", (e) => {
+    if (e.target === $("#upload-modal")) closeUploadModal();
+  });
+}
+
+
 /* ============ 设置页：配置读写 ============ */
 async function loadConfig() {
   try {
@@ -578,13 +767,6 @@ function bindSettings() {
   });
 }
 
-/* ============ 上传按钮仍为占位 ============ */
-function bindUploadAction() {
-  $('[data-action="upload"]').addEventListener("click", () => {
-    toast("文件上传将在后续版本实现", "warning");
-  });
-}
-
 /* ============ 按钮波纹 ============ */
 function bindRipple() {
   $$(".btn").forEach((btn) => {
@@ -610,7 +792,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindNotesSearch();
   bindEditModal();
   bindSettings();
-  bindUploadAction();
+  bindUploadModal();
   bindRipple();
   loadStats();
   loadRecentNotes();
