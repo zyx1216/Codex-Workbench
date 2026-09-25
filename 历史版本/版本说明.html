@@ -501,12 +501,26 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">知识消化平台 v1.0.0</td>
+        <td class="time">2026-09-25 15:30</td>
+        <td>
+          <span class="tag">FastAPI 起步</span><b>知识消化平台 v1.0.0 FastAPI 骨架（交互特效 UI）</b>：
+          <ul>
+            <li>在工作台根目录搭建完整 FastAPI 项目，取代之前 <code>v2/</code> 子目录的同名骨架；<code>v2/</code> 保留作并行参考版本。后端用 FastAPI 0.115 + Uvicorn 0.30 + SQLAlchemy 2.0 + SQLite，单页应用入口加 5 个占位 API（统计、笔记列表、AI 配置读取/保存、连接测试）。</li>
+            <li>SQLAlchemy 2.0 声明式建 3 张表 <code>notes / rss_sources / pending_items</code>，JSON 字段统一用 Text 存字符串；非敏感 AI 配置写入 <code>data/ai_config.json</code>，API Key 通过 keyring 写入 Windows 凭据管理器（服务名 <code>knowledge-digest</code>、用户名 <code>ai_api_key</code>），写入失败优雅降级不返回 500。</li>
+            <li>前端 <code>static/</code> 是原生 HTML/CSS/JS 单页应用：三 tab（首页/笔记库/设置）、抖音同款科技感 UI——深蓝渐变背景加 10 秒缓慢流动动画、毛玻璃卡片（<code>backdrop-filter: blur(12px)</code>）、悬浮 <code>translateY(-4px)</code>、数字从 0 滚动到目标值、tab 切换淡入淡出加轻微上滑、主按钮渐变加点击波纹、toast 从顶部滑入 3 秒后消失。</li>
+            <li>强调色用青色 <code>#06b6d4</code>（主按钮、链接、聚焦边框），紫色 <code>#8b5cf6</code> 仅在数字徽章点缀；暗色主题文字白/浅灰；响应式最大宽度 1200px 居中，移动端单列。</li>
+            <li>本次同时清掉旧 Streamlit 个人工作台的 <code>modules/</code>、<code>utils/</code>、<code>proxy.js</code> 等残留文件；v1.0 不实现任何业务（AI 改写、RSS 抓取、文件解析、笔记 CRUD 等都归 v1.1 及以后）；workbench conda 环境已装齐所有依赖，<code>run.bat</code> 双击启动后浏览器访问 <code>http://localhost:8000</code>。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
   <div class="foot">
     说明：版本创建时间取自对应功能提交入库的时间（精确到分钟）。文档类提交（项目约定、路线图、历史版本归档）不单独作为工作台功能版本。
-    <br>本文档最后更新：2026-09-19。后续每次发布新版本时，在上方表格追加一行并重新导出覆盖本 PDF。
+    <br>本文档最后更新：2026-09-25。后续每次发布新版本时，在上方表格追加一行并重新导出覆盖本 PDF。
   </div>
 </body>
 </html>
