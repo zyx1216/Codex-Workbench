@@ -515,6 +515,20 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">知识消化平台 v1.1.0</td>
+        <td class="time">2026-09-25 16:42</td>
+        <td>
+          <span class="tag">FastAPI 核心链路</span><b>手动输入链接 + AI 改写</b>：
+          <ul>
+            <li>打通核心流程：首页点「输入链接」弹出毛玻璃弹窗，粘贴网址后 httpx 抓取网页（浏览器 UA、15 秒超时、自动跟随跳转），BeautifulSoup 去掉导航页脚脚本等噪声并提取标题和正文，正文超 8000 字截断保护模型上下文，兼容 gbk 编码页面。</li>
+            <li>新增 <code>services/ai_service.py</code> 真实调用：<code>chat()</code> 读 ai_config.json 的 Base URL 和模型、从 keyring 读 Key，用 OpenAI 兼容接口生成文本（30 秒超时、重试 1 次）；<code>rewrite_to_plain()</code> 按知识科普专家设定把文章改写成 300-800 字大白话分点笔记、结尾带「一句话总结」；<code>generate_tags()</code> 生成 3-5 个标签，失败降级空标签不拖垮主流程。</li>
+            <li>新增 <code>services/note_service.py</code>：标签中英文逗号切分去重、存 JSON 字符串；笔记支持新建、分页列表、标题加内容搜索、详情和删除。<code>/api/process-url</code> 只抓取改写并返回预览不落库，用户在弹窗里确认后点「保存」才写库，支持「重新生成」；抓取或改写失败统一返回 code=1 提示原因，不抛 500。</li>
+            <li>笔记库由占位改为真实卡片列表，显示标题、标签 chip、来源和时间，点击展开正文和原文链接，删除前二次确认；新增弹窗、loading 转圈、chip、笔记卡片、危险按钮等样式，沿用 v1.0 毛玻璃加渐变风格；375px 窄屏弹窗不溢出。</li>
+            <li>本版不做自动抓取、RSS、文件上传、笔记编辑、回收站；首页统计仍为占位留给下一版。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
