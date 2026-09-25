@@ -1,67 +1,85 @@
 # -*- coding: utf-8 -*-
 """
-个人工作台 —— Streamlit 主入口。
+知识消化平台 v1.0 · FastAPI 主入口。
 
-职责：
-1. 启动时初始化数据目录和 SQLite 数据库；
-2. 用侧边栏做 7 个页面的导航；
-3. 把主内容区交给对应的页面模块渲染。
-
-侧边栏导航绑定 session_state 的 app_page，业务页（如日历点“编辑计划”）
-可以写入该键实现跨页跳转，用户手动点侧边栏也照常生效。
+- 启动时初始化数据目录和 SQLite 表
+- 挂载 /static 提供前端资源
+- 5 个 API 端点（v1.0 全部占位返回）
+- 根路径返回单页应用入口 index.html
 """
 
-import streamlit as st
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import config
-from utils.db import init_db
-from modules import calendar, knowledge, links, notes, plans, settings, today
+from services import ai_service
+from services.db import init_db
 
-# 启动时确保目录存在、数据表就绪（幂等操作，不会清空数据）
+# 启动时确保表就绪（幂等）
 init_db()
 
-# 页面基础设置
-st.set_page_config(
-    page_title=config.APP_NAME,
-    page_icon="🧰",
-    layout="wide",
-)
+app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
 
-# 侧边栏导航（状态驱动，允许其他页面通过 session_state 切换页面）
-PAGE_OPTIONS = [
-    "📊 今日",
-    "📅 日历",
-    "📝 计划",
-    "📔 笔记",
-    "🔗 收藏",
-    "📚 知识库",
-    "⚙️ 设置",
-]
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-st.sidebar.title("🧰 个人工作台")
-if "app_page" not in st.session_state:
-    st.session_state.app_page = PAGE_OPTIONS[0]
-st.sidebar.radio(
-    label="功能导航",
-    options=PAGE_OPTIONS,
-    key="app_page",
-    label_visibility="collapsed",
-)
-st.sidebar.caption(f"版本 v{config.APP_VERSION}")
 
-# 根据选择渲染对应页面（每个模块统一暴露 show() 函数）
-page = st.session_state.app_page
-if page == "📊 今日":
-    today.show()
-elif page == "📅 日历":
-    calendar.show()
-elif page == "📝 计划":
-    plans.show()
-elif page == "📔 笔记":
-    notes.show()
-elif page == "🔗 收藏":
-    links.show()
-elif page == "📚 知识库":
-    knowledge.show()
-else:
-    settings.show()
+class AIConfig(BaseModel):
+    """AI 配置请求体。"""
+
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+
+
+def ok(data=None, message: str = "success"):
+    """统一成功响应信封。"""
+    return {"code": 0, "message": message, "data": data}
+
+
+@app.get("/")
+def index() -> FileResponse:
+    """单页应用入口。"""
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/stats")
+def get_stats():
+    """首页三个概览卡片的数据源（v1.0 返回固定 0，v1.2 接真实统计）。"""
+    return ok({"total_notes": 0, "today_notes": 0, "pending": 0})
+
+
+@app.get("/api/notes")
+def list_notes():
+    """笔记列表（v1.0 返回空数组，v1.1 接真实查询）。"""
+    return ok([])
+
+
+@app.get("/api/ai-config")
+def get_ai_config():
+    """读取非敏感 AI 配置；不返回 Key。"""
+    return ok(ai_service.get_config())
+
+
+@app.post("/api/ai-config")
+def post_ai_config(payload: AIConfig):
+    """保存 AI 配置：base_url/model 写 json，api_key 非空时写 keyring。"""
+    key_saved = ai_service.save_config(
+        base_url=payload.base_url,
+        model=payload.model,
+        api_key=payload.api_key,
+    )
+    return ok({"saved": True, "key_saved": key_saved}, message="配置已保存")
+
+
+@app.post("/api/ai-test")
+def post_ai_test():
+    """测试 AI 连接（v1.0 占位，不真发请求）。"""
+    return ok(None, message=ai_service.test_connection())
+
+
+# 静态资源（CSS / JS）放在 /static 下
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
