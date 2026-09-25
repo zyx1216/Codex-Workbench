@@ -311,3 +311,173 @@ body {
 ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+
+/* ============================================================
+   v1.1 新增样式：链接弹窗、loading、笔记列表、标签 chip
+   全部复用上方 CSS 变量，与 v1.0 暗色毛玻璃风格一致
+   ============================================================ */
+
+/* ============ 弹窗遮罩与卡片 ============ */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(6px);
+}
+.modal-mask[hidden] { display: none; }
+
+.modal {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 28px;
+  border-radius: var(--radius);
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-hi);
+}
+
+.modal-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.modal-close:hover { background: var(--glass-bg-hi); color: var(--text); }
+
+.modal-title { margin: 0 0 8px; font-size: 18px; }
+.modal-desc { margin: 0 0 18px; color: var(--text-muted); font-size: 13px; }
+.modal-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  font-size: 13px;
+}
+
+/* ============ loading 转圈 ============ */
+.spinner {
+  width: 44px;
+  height: 44px;
+  margin: 8px auto 18px;
+  border-radius: 50%;
+  border: 3px solid var(--glass-bg-hi);
+  border-top-color: var(--primary);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-text {
+  margin: 0 0 6px;
+  text-align: center;
+  font-size: 15px;
+}
+#modal-stage-loading .hint { text-align: center; }
+
+/* ============ 预览区 ============ */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+.chip {
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--primary);
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+}
+
+.preview-content,
+.note-body {
+  color: var(--text-muted);
+  white-space: pre-wrap;       /* 保留 AI 输出的换行和分点 */
+  word-break: break-word;
+}
+.preview-content {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+
+/* ============ 笔记库列表 ============ */
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.note-card {
+  padding: 18px 20px;
+  cursor: default;
+}
+.note-card.expanded { border-color: rgba(6, 182, 212, 0.35); }
+
+.note-head { cursor: pointer; }
+.note-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.note-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.note-detail { margin-top: 14px; }
+.note-detail[hidden] { display: none; }
+.note-body {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--glass-bg);
+}
+.note-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+}
+.note-link {
+  color: var(--primary);
+  font-size: 13px;
+  text-decoration: none;
+}
+.note-link:hover { text-decoration: underline; }
+
+/* 危险按钮：删除用红色，和主按钮区分 */
+.btn-danger {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  border: none;
+}
+.btn-danger:hover { filter: brightness(1.15); }
+.btn-sm { padding: 5px 14px; font-size: 13px; }
+
+/* ============ 响应式：窄屏弹窗内边距收窄 ============ */
+@media (max-width: 640px) {
+  .modal { padding: 22px 18px; }
+  .modal-mask { padding: 12px; }
+}

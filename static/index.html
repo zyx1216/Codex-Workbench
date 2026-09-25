@@ -62,15 +62,8 @@
       <h2 class="section-title gradient-text">笔记库</h2>
       <div class="toolbar">
         <input type="text" id="notes-search" class="input" placeholder="🔍 搜索标题或内容…" />
-        <select id="notes-tag" class="input">
-          <option value="">全部分类</option>
-        </select>
       </div>
-      <div class="card glass empty" id="notes-list">
-        <div class="empty-icon">📝</div>
-        <p>暂无笔记</p>
-        <p class="hint">v1.1 将在这里显示笔记列表</p>
-      </div>
+      <div id="notes-list" class="notes-list"></div>
     </section>
 
     <!-- 设置 -->
@@ -116,6 +109,43 @@
       </div>
     </section>
   </main>
+
+  <!-- 链接处理弹窗 -->
+  <div class="modal-mask" id="link-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="link-modal-close" title="关闭">×</button>
+
+      <!-- 输入阶段 -->
+      <div class="modal-stage" id="modal-stage-input">
+        <h3 class="modal-title">🔗 输入网页链接</h3>
+        <p class="modal-desc">粘贴文章网址，自动抓取正文并改写成小白笔记。</p>
+        <input type="text" id="link-url-input" class="input"
+               placeholder="https://example.com/article" />
+        <div class="modal-error" id="link-modal-error" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-process-url">开始处理</button>
+        </div>
+      </div>
+
+      <!-- 处理中阶段 -->
+      <div class="modal-stage" id="modal-stage-loading" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p class="loading-text">正在抓取和改写…</p>
+        <p class="hint">抓取网页加 AI 改写大约需要十几秒，请稍候</p>
+      </div>
+
+      <!-- 预览阶段 -->
+      <div class="modal-stage" id="modal-stage-preview" hidden>
+        <h3 class="modal-title" id="preview-title"></h3>
+        <div class="chip-row" id="preview-tags"></div>
+        <div class="preview-content" id="preview-content"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-note">💾 保存</button>
+          <button class="btn btn-ghost" id="btn-regenerate">🔄 重新生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id="toast-host"></div>
 

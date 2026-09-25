@@ -1,31 +1,29 @@
 # 工作台
 
-本地单机项目集合。仓库内目前并存两个项目：
+本地单机项目集合。仓库内目前并存这些内容：
 
-- **个人工作台（Streamlit v1.5.0）**：计划、笔记、收藏、知识库、日历。
-- **知识消化平台（FastAPI v1.0.0，`v2/` 目录）**：基于 FastAPI + 原生 HTML/JS 的新版骨架，后续用于「链接/RSS/文件 → AI 改写笔记」。
+- **知识消化平台（FastAPI v1.1.0，根目录，当前主版本）**：输入网页链接，自动抓取正文并用 AI 改写成通俗易懂的小白笔记。
+- **知识消化平台 v1.0 骨架（`v2/` 目录）**：早期 FastAPI 骨架副本，保留作并行参考。
+- **个人工作台（Streamlit v1.5.0，旧版存档）**：计划、日历、笔记、收藏、知识库，代码已从根目录移除，历史版本见 `历史版本/` 与 `versions/`。
 
-## 项目一：个人工作台
+## 知识消化平台（当前主版本）
 
-技术栈：Streamlit + SQLAlchemy + SQLite。
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-访问 http://localhost:8501 。
-
-## 项目二：知识消化平台
-
-详见 `v2/README.md`。
+技术栈：FastAPI + Uvicorn + SQLAlchemy + SQLite，前端为原生 HTML/CSS/JS。
 
 ```bash
-python -m uvicorn v2.app:app --reload --port 8000
+python -m uvicorn app:app --reload --port 8000
 ```
 
-或双击 `v2/run.bat`，访问 http://localhost:8000 。
+或双击 `run.bat`，访问 http://localhost:8000 。
+
+功能：
+
+- 首页输入网页链接，自动抓取正文（httpx + BeautifulSoup）；
+- AI 改写成小白笔记并生成标签（OpenAI 兼容接口，密钥存 keyring）；
+- 改写结果先预览，确认后手动保存；
+- 笔记库支持列表、关键词搜索、展开查看详情和删除；
+- 设置页可配置 Base URL、模型名称和 API Key。
 
 ## 约定
 
-两份项目各自的约定分别在 `v2/` 内 README / AGENTS.md，以及旧 Streamlit 项目的 AGENTS.md 章节中维护。
+项目约定见根目录 `AGENTS.md`；每次版本发布的说明见 `历史版本/版本说明.html` 与 `versions/` 下的代码快照。

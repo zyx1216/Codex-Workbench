@@ -1,23 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v1.0 · FastAPI 主入口。
+知识消化平台 v1.1 · FastAPI 主入口。
 
 - 启动时初始化数据目录和 SQLite 表
 - 挂载 /static 提供前端资源
-- 5 个 API 端点（v1.0 全部占位返回）
+- v1.0 占位 API 保留；新增链接处理、笔记 CRUD
 - 根路径返回单页应用入口 index.html
 """
 
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 import config
-from services import ai_service
-from services.db import init_db
+from services import ai_service, crawler_service, note_service
+from services.db import get_db, init_db
 
 # 启动时确保表就绪（幂等）
 init_db()
@@ -27,6 +29,7 @@ app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+# ============ 请求体模型 ============
 class AIConfig(BaseModel):
     """AI 配置请求体。"""
 
@@ -35,11 +38,29 @@ class AIConfig(BaseModel):
     api_key: str = ""
 
 
-def ok(data=None, message: str = "success"):
+class ProcessUrlRequest(BaseModel):
+    """链接处理请求体。"""
+
+    url: str
+
+
+class NoteCreateRequest(BaseModel):
+    """笔记保存请求体（前端预览确认后提交）。"""
+
+    title: str = ""
+    content: str = ""
+    original_url: str | None = None
+    tags: list[str] = []
+    source: str = "手动输入"
+    category: str = "默认"
+
+
+def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
     """统一成功响应信封。"""
     return {"code": 0, "message": message, "data": data}
 
 
+# ============ 页面入口与 v1.0 端点 ============
 @app.get("/")
 def index() -> FileResponse:
     """单页应用入口。"""
@@ -48,14 +69,8 @@ def index() -> FileResponse:
 
 @app.get("/api/stats")
 def get_stats():
-    """首页三个概览卡片的数据源（v1.0 返回固定 0，v1.2 接真实统计）。"""
+    """首页概览（v1.1 仍保持占位，v1.2 接真实统计）。"""
     return ok({"total_notes": 0, "today_notes": 0, "pending": 0})
-
-
-@app.get("/api/notes")
-def list_notes():
-    """笔记列表（v1.0 返回空数组，v1.1 接真实查询）。"""
-    return ok([])
 
 
 @app.get("/api/ai-config")
@@ -77,9 +92,91 @@ def post_ai_config(payload: AIConfig):
 
 @app.post("/api/ai-test")
 def post_ai_test():
-    """测试 AI 连接（v1.0 占位，不真发请求）。"""
+    """测试连接（本期维持 v1.0 占位）。"""
     return ok(None, message=ai_service.test_connection())
 
 
-# 静态资源（CSS / JS）放在 /static 下
+# ============ v1.1：链接处理 ============
+@app.post("/api/process-url")
+def process_url(payload: ProcessUrlRequest):
+    """抓取网页正文并 AI 改写，返回预览数据（本端点不写库）。"""
+    try:
+        # 第一步：抓取网页
+        html_bytes, final_url = crawler_service.fetch_url(payload.url)
+        # 第二步：提取标题和正文
+        extracted = crawler_service.extract_content(html_bytes, final_url)
+        # 第三步：AI 改写成通俗笔记
+        rewritten = ai_service.rewrite_to_plain(
+            extracted["title"], extracted["content"]
+        )
+        # 第四步：生成标签，失败降级空列表
+        tags = ai_service.generate_tags(extracted["title"], extracted["content"])
+    except (crawler_service.CrawlError, ai_service.AiError) as exc:
+        # 抓取或改写失败：统一返回 code=1，不抛 500
+        return {"code": 1, "message": str(exc), "data": None}
+
+    return ok({
+        "title": extracted["title"],
+        "content": rewritten,
+        "tags": tags,
+        "original_url": final_url,
+    })
+
+
+# ============ v1.1：笔记 CRUD ============
+@app.post("/api/notes")
+def create_note(payload: NoteCreateRequest, db: Session = Depends(get_db)):
+    """保存预览确认后的笔记。"""
+    note = note_service.create_note(
+        session=db,
+        title=payload.title,
+        content=payload.content,
+        original_url=payload.original_url,
+        tags=payload.tags,
+        source=payload.source,
+        category=payload.category,
+    )
+    return ok(note_service.serialize_note(note), message="笔记已保存")
+
+
+@app.get("/api/notes")
+def list_notes(
+    keyword: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """笔记列表：支持关键词、分页，按创建时间倒序。"""
+    items, total = note_service.list_notes(
+        db, keyword=keyword, page=page, size=size
+    )
+    return ok({
+        "items": [note_service.serialize_note(note) for note in items],
+        "total": total,
+        "page": page,
+        "size": size,
+    })
+
+
+@app.get("/api/notes/{note_id}")
+def get_note(note_id: int, db: Session = Depends(get_db)):
+    """笔记详情。"""
+    try:
+        note = note_service.get_note_by_id(db, note_id)
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(note_service.serialize_note(note))
+
+
+@app.delete("/api/notes/{note_id}")
+def delete_note(note_id: int, db: Session = Depends(get_db)):
+    """直接真删笔记。"""
+    try:
+        note_service.delete_note(db, note_id)
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(None, message="笔记已删除")
+
+
+# 静态资源（CSS / JS）放在 /static 下，需在所有路由之后挂载
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
