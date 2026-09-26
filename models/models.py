@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ORM 模型：notes、rss_sources、pending_items、fetch_logs。
+ORM 模型：notes、rss_sources、pending_items、fetch_logs、tasks。
 JSON 字段统一用 Text 存 JSON 字符串，不依赖 SQLite 原生 JSON 类型。
 """
 
@@ -89,3 +89,35 @@ class FetchLog(Base):
     message = Column(String(500), nullable=False, default="", comment="结果信息")
     new_count = Column(Integer, nullable=False, default=0, comment="新增待处理条数")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+class Task(Base):
+    """异步任务表。"""
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "task_type IN ('rewrite_url', 'rewrite_text', 'batch_process', "
+            "'evaluate', 'regenerate')",
+            name="ck_tasks_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'success', 'failed')",
+            name="ck_tasks_status",
+        ),
+        CheckConstraint(
+            "progress >= 0 AND progress <= 100",
+            name="ck_tasks_progress",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_type = Column(String(30), nullable=False, comment="任务类型")
+    status = Column(String(20), nullable=False, default="pending", comment="任务状态")
+    progress = Column(Integer, nullable=False, default=0, comment="进度百分比")
+    progress_message = Column(String(200), nullable=False, default="", comment="进度说明")
+    params = Column(Text, nullable=False, default="{}", comment="任务参数 JSON")
+    result = Column(Text, nullable=True, comment="成功结果 JSON")
+    error = Column(Text, nullable=True, comment="错误信息")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)

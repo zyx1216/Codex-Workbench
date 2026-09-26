@@ -30,6 +30,8 @@ function initTabs() {
         loadRecentNotes();
       } else if (target === "qa") {
         loadVectorStats();
+      } else if (target === "tasks") {
+        loadTaskList();
       }
     });
   });
@@ -128,6 +130,47 @@ function closeLinkModal() {
   $("#link-modal").hidden = true;
 }
 
+function pollTaskOnce(taskId) {
+  return fetchJson(`/api/tasks/${taskId}`);
+}
+
+function startTaskPolling(taskId, handlers) {
+  let stopped = false;
+
+  async function checkTask() {
+    try {
+      const body = await pollTaskOnce(taskId);
+      const task = body.data;
+      if (task.status === "running") {
+        if (handlers.onProgress) handlers.onProgress(task);
+        return false;
+      }
+      stopped = true;
+      if (task.status === "success" && handlers.onSuccess) {
+        handlers.onSuccess(task);
+      }
+      if (task.status === "failed" && handlers.onFailed) {
+        handlers.onFailed(task);
+      }
+    } catch (err) {
+      stopped = true;
+      if (handlers.onError) handlers.onError(err);
+    }
+    return stopped;
+  }
+
+  const timer = setInterval(async () => {
+    if (stopped) return;
+    const done = await checkTask();
+    if (done) clearInterval(timer);
+  }, 2000);
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 function buildProcessPayload() {
   if (inputMode === "text") {
     return {
@@ -141,21 +184,6 @@ function buildProcessPayload() {
     mode: "url",
     url: $("#link-url-input").value.trim(),
   };
-}
-
-async function postProcessInput(payload) {
-  // 这里不能用 fetchJson：失败信封的 data.stage 要用于判断是否提示切换手动模式
-  const res = await fetch("/api/process-url", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  let body = null;
-  try { body = await res.json(); } catch (_) { /* 非 JSON 按普通错误处理 */ }
-  if (!res.ok) {
-    throw new Error(body?.message || body?.detail || `请求失败（${res.status}）`);
-  }
-  return body || {code: 1, message: "服务返回格式异常", data: null};
 }
 
 async function processCurrent() {
@@ -175,22 +203,39 @@ async function processCurrent() {
   }
 
   lastProcessPayload = payload;
-  $("#process-loading-text").textContent = inputMode === "text"
-    ? "正在改写正文…"
-    : "正在抓取和改写…";
+  $("#process-loading-text").textContent = "任务已创建，正在处理…";
   showStage("loading");
 
   try {
-    const body = await postProcessInput(payload);
-    if (body.code !== 0) {
-      await handleProcessFailure(body, payload, errorBox);
-      return;
-    }
-    previewData = body.data;
-    renderPreview(previewData);
-    showStage("preview");
+    const body = await fetchJson("/api/process-url", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    startTaskPolling(body.data.task_id, {
+      onProgress: (task) => {
+        $("#process-loading-text").textContent = task.progress_message || "正在处理…";
+      },
+      onSuccess: (task) => {
+        previewData = task.result;
+        renderPreview(previewData);
+        showStage("preview");
+      },
+      onFailed: (task) => {
+        handleProcessFailure(
+          {message: task.error, data: task.result},
+          payload,
+          errorBox,
+        );
+      },
+      onError: (err) => {
+        errorBox.textContent = err.message || "处理失败，请重试";
+        errorBox.hidden = false;
+        showStage("input");
+      },
+    });
   } catch (err) {
-    errorBox.textContent = err.message || "处理失败，请重试";
+    errorBox.textContent = err.message || "任务创建失败";
     errorBox.hidden = false;
     showStage("input");
   }
@@ -473,6 +518,11 @@ function buildNoteCard(note) {
   regenerateBtn.textContent = "🔁 重新生成";
   detailActions.appendChild(regenerateBtn);
 
+  const evaluateBtn = document.createElement("button");
+  evaluateBtn.className = "btn btn-ghost btn-sm";
+  evaluateBtn.textContent = "⭐ 立即评估";
+  detailActions.appendChild(evaluateBtn);
+
   const editBtn = document.createElement("button");
   editBtn.className = "btn btn-ghost btn-sm";
   editBtn.textContent = "✏️ 编辑";
@@ -496,6 +546,11 @@ function buildNoteCard(note) {
   regenerateBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     openStyleModal(note);
+  });
+
+  evaluateBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    evaluateNoteNow(note, evaluateBtn);
   });
 
   editBtn.addEventListener("click", (e) => {
@@ -1220,85 +1275,66 @@ async function batchProcessSelected() {
   const itemIds = cards.map((card) => Number(card.dataset.itemId));
   const btn = $("#btn-batch-process");
   btn.disabled = true;
+  btn.textContent = "正在创建任务…";
   $("#batch-progress").hidden = false;
   $("#batch-progress-bar").style.width = "0";
+  $("#batch-progress-text").textContent = "等待后台执行…";
 
   try {
-    await streamBatchProcess(itemIds);
+    const body = await fetchJson("/api/pending/batch-process", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({item_ids: itemIds}),
+    });
+    startTaskPolling(body.data.task_id, {
+      onProgress: (task) => {
+        $("#batch-progress-bar").style.width = `${task.progress}%`;
+        $("#batch-progress-text").textContent = task.progress_message || "正在处理…";
+      },
+      onSuccess: async (task) => {
+        applyBatchSummary(task.result);
+        await Promise.all([loadStats(), loadRecentNotes()]);
+      },
+      onFailed: (task) => {
+        toast(task.error || "批量处理失败", "error");
+        resetBatchToolbar();
+      },
+      onError: (err) => {
+        toast(err.message || "批量处理失败", "error");
+        resetBatchToolbar();
+      },
+    });
   } catch (err) {
     toast(err.message || "批量处理失败", "error");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "批量处理";
+    resetBatchToolbar();
   }
 }
 
-async function streamBatchProcess(itemIds) {
-  const res = await fetch("/api/pending/batch-process", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({item_ids: itemIds}),
+function applyBatchSummary(result) {
+  const items = result.results || [];
+  items.forEach((item) => {
+    const card = $(`.pending-card[data-item-id="${item.item_id}"]`);
+    if (!card) return;
+    if (item.status === "success") {
+      card.remove();
+      return;
+    }
+    const check = $(".pending-item-check", card);
+    const errorBox = $(".pending-item-error", card);
+    check.checked = false;
+    errorBox.textContent = item.error || "处理失败";
+    errorBox.hidden = false;
   });
-  if (!res.ok || !res.body) {
-    throw new Error(`批量处理请求失败（${res.status}）`);
+
+  if (!$(".pending-card")) {
+    $("#pending-list").appendChild(
+      makeFeedEmpty("📭", "暂无待处理内容，去添加 RSS 源吧")
+    );
   }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  let summary = null;
-
-  while (true) {
-    const {value, done} = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, {stream: true});
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const envelope = JSON.parse(line);
-      if (envelope.code !== 0) throw new Error(envelope.message || "批量处理失败");
-      const data = envelope.data || {};
-      if (data.type === "progress") updateBatchProgress(data);
-      if (data.type === "item") handleBatchItemResult(data);
-      if (data.type === "summary") summary = data;
-    }
-  }
-
-  await loadStats();
-  if (!summary) throw new Error("批量处理结果缺失");
-  toast(`批量处理完成：成功 ${summary.success} 条，失败 ${summary.failed} 条`,
-    summary.failed ? "warning" : "success");
-}
-
-function updateBatchProgress(data) {
-  const percent = Math.round((data.index / data.total) * 100);
-  $("#batch-progress-bar").style.width = `${percent}%`;
-  $("#batch-progress-text").textContent = `正在处理 ${data.index}/${data.total}…`;
-}
-
-function handleBatchItemResult(data) {
-  const card = $(`.pending-card[data-item-id="${data.item_id}"]`);
-  if (!card) return;
-  const check = $(".pending-item-check", card);
-  const errorBox = $(".pending-item-error", card);
-
-  if (data.status === "success") {
-    card.remove();
-    syncSelectAllState();
-    if (!$(".pending-card")) {
-      $("#pending-list").appendChild(
-        makeFeedEmpty("📭", "暂无待处理内容，去添加 RSS 源吧")
-      );
-    }
-    return;
-  }
-
-  check.checked = false;
-  errorBox.textContent = data.error || "处理失败";
-  errorBox.hidden = false;
   syncSelectAllState();
+  resetBatchToolbar();
+  toast(`批量处理完成：成功 ${result.success} 条，失败 ${result.failed} 条`,
+    result.failed ? "warning" : "success");
 }
 
 function makeFeedEmpty(icon, text) {
@@ -1773,6 +1809,165 @@ function stopQualityPolling(noteId) {
   delete qualityPollers[noteId];
 }
 
+let taskCenterTimer = null;
+
+const TASK_TYPE_TEXT = {
+  rewrite_url: "链接抓取改写",
+  rewrite_text: "手动粘贴改写",
+  batch_process: "批量处理",
+  evaluate: "质量评估",
+  regenerate: "风格重新生成",
+};
+
+const TASK_STATUS_TEXT = {
+  pending: "等待中",
+  running: "进行中",
+  success: "成功",
+  failed: "失败",
+};
+
+async function evaluateNoteNow(note, button) {
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在创建任务…";
+  try {
+    const body = await fetchJson(`/api/notes/${note.id}/evaluate`, {method: "POST"});
+    button.textContent = "评估中…";
+    startTaskPolling(body.data.task_id, {
+      onProgress: (task) => {
+        button.textContent = task.progress_message || "评估中…";
+      },
+      onSuccess: async (task) => {
+        const freshBody = await fetchJson(`/api/notes/${note.id}`);
+        const card = replaceNoteCard(freshBody.data);
+        if (card) card.scrollIntoView({behavior: "smooth", block: "center"});
+        toast(`质量评分：${task.result.score} 分`, "success");
+      },
+      onFailed: (task) => {
+        button.textContent = oldText;
+        toast(task.error || "质量评估失败", "error");
+      },
+      onError: (err) => {
+        button.textContent = oldText;
+        toast(err.message || "质量评估失败", "error");
+      },
+    });
+  } catch (err) {
+    toast(err.message || "任务创建失败", "error");
+  } finally {
+    // 轮询在后台继续，恢复按钮可操作状态
+    button.disabled = false;
+    if ($("#style-modal").hidden !== false) button.textContent = oldText;
+  }
+}
+
+async function loadTaskList() {
+  const box = $("#task-list");
+  try {
+    const body = await fetchJson("/api/tasks?limit=30");
+    const tasks = body.data || [];
+    renderTaskList(tasks);
+    const active = tasks.some((task) => ["pending", "running"].includes(task.status));
+    if (active) {
+      if (!taskCenterTimer) taskCenterTimer = setInterval(loadTaskList, 2000);
+    } else if (taskCenterTimer) {
+      clearInterval(taskCenterTimer);
+      taskCenterTimer = null;
+    }
+  } catch (err) {
+    box.innerHTML = "";
+    const empty = document.createElement("div");
+    empty.className = "card glass empty";
+    empty.textContent = `任务加载失败：${err.message}`;
+    box.appendChild(empty);
+  }
+}
+
+function renderTaskList(tasks) {
+  const box = $("#task-list");
+  box.innerHTML = "";
+  if (!tasks.length) {
+    const empty = document.createElement("div");
+    empty.className = "card glass empty";
+    empty.innerHTML = '<div class="empty-icon">📋</div><p>暂无任务</p>';
+    box.appendChild(empty);
+    return;
+  }
+  tasks.forEach((task) => box.appendChild(buildTaskCard(task)));
+}
+
+function buildTaskCard(task) {
+  const card = document.createElement("div");
+  card.className = `card glass task-card status-${task.status}`;
+
+  const header = document.createElement("div");
+  header.className = "task-card-head";
+  header.innerHTML = `
+    <div class="task-title">${escapeHtml(TASK_TYPE_TEXT[task.task_type] || task.task_type)}</div>
+    <span class="task-status-badge">${escapeHtml(TASK_STATUS_TEXT[task.status] || task.status)}</span>
+  `;
+  card.appendChild(header);
+
+  const progressTrack = document.createElement("div");
+  progressTrack.className = "task-progress-track";
+  const progressBar = document.createElement("div");
+  progressBar.className = "task-progress-bar";
+  progressBar.style.width = `${task.progress}%`;
+  progressTrack.appendChild(progressBar);
+  card.appendChild(progressTrack);
+
+  const message = document.createElement("div");
+  message.className = "task-message";
+  message.textContent = task.progress_message || "等待执行";
+  card.appendChild(message);
+
+  const meta = document.createElement("div");
+  meta.className = "task-meta";
+  meta.textContent = `创建：${formatTime(task.created_at)}　更新：${formatTime(task.updated_at)}`;
+  card.appendChild(meta);
+
+  if (task.status === "success") {
+    const result = document.createElement("div");
+    result.className = "task-result";
+    result.textContent = summarizeTaskResult(task.task_type, task.result);
+    card.appendChild(result);
+  }
+  if (task.status === "failed") {
+    const error = document.createElement("div");
+    error.className = "task-error";
+    error.textContent = task.error || "任务失败";
+    card.appendChild(error);
+  }
+
+  return card;
+}
+
+function summarizeTaskResult(type, result) {
+  if (!result) return "处理完成";
+  if (type === "batch_process") {
+    return `成功 ${result.success ?? 0} 条，失败 ${result.failed ?? 0} 条`;
+  }
+  if (type === "evaluate") {
+    return `评分：${result.score ?? "-"} 分；${result.reason || ""}`;
+  }
+  if (type === "regenerate") {
+    return result.note?.title ? `已更新：${result.note.title}` : "重新生成完成";
+  }
+  return result.title ? `已生成预览：${result.title}` : "处理完成";
+}
+
+function bindTaskCenter() {
+  $("#btn-clear-cache").addEventListener("click", async () => {
+    try {
+      const body = await fetchJson("/api/cache/clear", {method: "POST"});
+      toast(body.message, "success");
+      loadTaskList();
+    } catch (err) {
+      toast(err.message || "清空缓存失败", "error");
+    }
+  });
+}
+
 function openStyleModal(note) {
   styleTargetNote = note;
   $("#style-modal-note-title").textContent = note.title || "无标题";
@@ -1796,27 +1991,45 @@ async function chooseRegenerateStyle(button) {
   const oldHtml = button.innerHTML;
   errorBox.hidden = true;
   buttons.forEach((item) => { item.disabled = true; });
-  button.innerHTML = "⏳ 正在重新生成…";
+  button.innerHTML = "⏳ 正在创建任务…";
 
   try {
     const body = await fetchJson(`/api/notes/${styleTargetNote.id}/regenerate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ style: button.dataset.style }),
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({style: button.dataset.style}),
     });
-    closeStyleModal();
-    const card = replaceNoteCard(body.data);
-    if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
-    toast(body.message || "笔记已重新生成", body.message?.includes("警告") ? "warning" : "success");
+    button.innerHTML = "⏳ 正在重新生成…";
+    startTaskPolling(body.data.task_id, {
+      onProgress: (task) => {
+        button.innerHTML = `⏳ ${task.progress_message || "正在重新生成…"}`;
+      },
+      onSuccess: (task) => {
+        closeStyleModal();
+        const card = replaceNoteCard(task.result.note);
+        if (card) card.scrollIntoView({behavior: "smooth", block: "center"});
+        const warnings = task.result.warnings || [];
+        toast(warnings.length ? `已完成，但有警告：${warnings.join("；")}` : "笔记已重新生成",
+          warnings.length ? "warning" : "success");
+      },
+      onFailed: (task) => {
+        errorBox.textContent = task.error || "重新生成失败";
+        errorBox.hidden = false;
+      },
+      onError: (err) => {
+        errorBox.textContent = err.message || "重新生成失败";
+        errorBox.hidden = false;
+      },
+    });
   } catch (err) {
-    errorBox.textContent = err.message || "重新生成失败";
+    errorBox.textContent = err.message || "任务创建失败";
     errorBox.hidden = false;
   } finally {
     buttons.forEach((item) => {
       item.disabled = false;
       item.classList.remove("is-loading");
     });
-    button.innerHTML = oldHtml;
+    if ($("#style-modal").hidden === false) button.innerHTML = oldHtml;
   }
 }
 
@@ -1860,6 +2073,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindUploadModal();
   bindFeedPage();
   bindQaPage();
+  bindTaskCenter();
   bindRipple();
   loadStats();
   loadRecentNotes();

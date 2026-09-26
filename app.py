@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v2.3 · FastAPI 主入口。
+知识消化平台 v2.4 · FastAPI 主入口。
 
 - 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
 - 提供链接处理、文件上传、RSS、笔记管理、语义搜索、RAG 问答和 Agent 自然语言操作接口
 - 所有 API 统一返回 {code, message, data}
 """
 
-import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -23,15 +22,17 @@ import config
 from services import (
     ai_service,
     agent_service,
+    cache_service,
     crawler_service,
     file_service,
     note_service,
     rag_service,
     rss_service,
     scheduler_service,
+    task_service,
     vector_service,
 )
-from services.db import SessionLocal, get_db, init_db
+from services.db import get_db, init_db
 
 
 @asynccontextmanager
@@ -41,6 +42,7 @@ async def lifespan(_app: FastAPI):
     scheduler_service.start_scheduler()
     # SQLite 有笔记但向量库为空时后台补齐，不阻塞 FastAPI 启动
     vector_service.start_startup_sync_if_needed()
+    task_service.start_worker()
     yield
     scheduler_service.stop_scheduler()
 
@@ -195,56 +197,28 @@ def post_ai_test():
 # ============ 链接 / 手动粘贴处理 ============
 @app.post("/api/process-url")
 def process_url(payload: ProcessUrlRequest):
-    """抓取网页或处理手动粘贴正文，AI 改写后返回预览数据（本端点不写库）。"""
+    """创建链接或手动粘贴改写任务；任务成功后仍只返回预览。"""
     mode = payload.mode if payload.mode in ("url", "text") else "url"
+    if mode == "url":
+        if not payload.url.strip():
+            return fail("请输入网页链接")
+        task_type = "rewrite_url"
+    else:
+        if not payload.content.strip():
+            return fail("请粘贴正文内容")
+        task_type = "rewrite_text"
+
+    params = {
+        "mode": mode,
+        "url": payload.url,
+        "title": payload.title,
+        "content": payload.content,
+    }
     try:
-        if mode == "url":
-            return ok(_process_url_mode(payload))
-        return ok(_process_text_mode(payload))
-    except crawler_service.CrawlError as exc:
-        stage = "crawl" if mode == "url" else "text"
-        return fail(str(exc), {"stage": stage})
-    except ai_service.AiError as exc:
-        return fail(str(exc), {"stage": "ai"})
-
-
-def _process_url_mode(payload: ProcessUrlRequest) -> dict[str, Any]:
-    """链接抓取模式。"""
-    html_bytes, final_url = crawler_service.fetch_url(payload.url)
-    extracted = crawler_service.extract_content(html_bytes, final_url)
-    rewritten = ai_service.rewrite_to_plain(
-        extracted["title"], extracted["content"]
-    )
-    tags = ai_service.generate_tags(extracted["title"], extracted["content"])
-    return {
-        "title": extracted["title"],
-        "content": rewritten,
-        "tags": tags,
-        "original_url": final_url,
-        "source": "手动输入",
-    }
-
-
-def _process_text_mode(payload: ProcessUrlRequest) -> dict[str, Any]:
-    """手动粘贴模式；不发起网络请求。"""
-    extracted = crawler_service.extract_from_text(
-        payload.title, payload.content, payload.url
-    )
-    title = extracted["title"]
-    if not title:
-        try:
-            title = ai_service.generate_title(extracted["content"]) or "无标题"
-        except ai_service.AiError:
-            title = "无标题"
-    rewritten = ai_service.rewrite_to_plain(title, extracted["content"])
-    tags = ai_service.generate_tags(title, extracted["content"])
-    return {
-        "title": title,
-        "content": rewritten,
-        "tags": tags,
-        "original_url": extracted["url"] or None,
-        "source": "手动粘贴",
-    }
+        task_id = task_service.create_task(task_type, params)
+    except task_service.TaskError as exc:
+        return fail(str(exc))
+    return ok({"task_id": task_id}, message="任务已创建，正在处理")
 
 
 # ============ 文件上传解析 ============
@@ -378,14 +352,13 @@ def get_related_notes(note_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/notes/{note_id}/evaluate")
 def evaluate_note(note_id: int, db: Session = Depends(get_db)):
-    """立即执行 AI 质量评估。"""
+    """创建 AI 质量评估任务。"""
     try:
-        result = note_service.evaluate_note_quality(db, note_id)
+        note_service.get_note_by_id(db, note_id)
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (ai_service.AiError, ValueError) as exc:
-        return fail(str(exc))
-    return ok(result, message="质量评估完成")
+    task_id = task_service.create_task("evaluate", {"note_id": note_id})
+    return ok({"task_id": task_id}, message="质量评估任务已创建")
 
 
 @app.post("/api/notes/{note_id}/regenerate")
@@ -394,20 +367,17 @@ def regenerate_note(
     payload: NoteRegenerateRequest,
     db: Session = Depends(get_db),
 ):
-    """按指定风格重新生成正文、标签、关联和评分。"""
+    """创建按风格重新生成任务。"""
     try:
-        note, warnings = note_service.regenerate_note(
-            db, note_id, payload.style
-        )
+        note_service.get_note_by_id(db, note_id)
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ai_service.AiError as exc:
-        return fail(str(exc))
-
-    message = "笔记已重新生成"
-    if warnings:
-        message = f"笔记已重新生成，但存在警告：{'；'.join(warnings)}"
-    return ok(note_service.serialize_note(note), message=message)
+    if payload.style not in ("通俗", "精简", "详细"):
+        return fail("不支持的改写风格，只能选择通俗、精简或详细")
+    task_id = task_service.create_task(
+        "regenerate", {"note_id": note_id, "style": payload.style}
+    )
+    return ok({"task_id": task_id}, message="重新生成任务已创建")
 
 
 @app.put("/api/notes/{note_id}")
@@ -546,82 +516,43 @@ def delete_pending(item_id: int, db: Session = Depends(get_db)):
     return ok(None, message="待处理项已删除")
 
 
-# ============ 待处理内容批量处理 ============
+# ============ 任务中心、缓存和批量处理 ============
+@app.get("/api/tasks/{task_id}")
+def get_task(task_id: int):
+    """查询单个异步任务。"""
+    try:
+        task = task_service.get_task(task_id)
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(task)
+
+
+@app.get("/api/tasks")
+def list_tasks(limit: int = Query(default=20, ge=1, le=100)):
+    """查询最近任务。"""
+    return ok(task_service.list_tasks(limit))
+
+
+@app.post("/api/cache/clear")
+def clear_cache():
+    """清空全部本地缓存。"""
+    count = cache_service.clear_all()
+    return ok({"removed": count}, message=f"已清空 {count} 个缓存文件")
+
+
 @app.post("/api/pending/batch-process")
 def batch_process_pending(payload: BatchProcessRequest):
-    """顺序处理并直接保存；通过 NDJSON 实时返回进度。"""
+    """创建批量处理任务；任务按顺序执行并直接保存。"""
     item_ids = list(dict.fromkeys(payload.item_ids))
     if not item_ids:
         return fail("请先选择待处理内容")
     if len(item_ids) > 50:
         return fail("单次最多批量处理 50 条")
-    return StreamingResponse(
-        _batch_process_events(item_ids),
-        media_type="application/x-ndjson",
+    task_id = task_service.create_task(
+        "batch_process", {"item_ids": item_ids}
     )
+    return ok({"task_id": task_id}, message="批量处理任务已创建")
 
-
-def _batch_process_events(item_ids: list[int]):
-    """生成批量处理流式事件。"""
-    total = len(item_ids)
-    results = []
-    success_count = failed_count = 0
-
-    for index, item_id in enumerate(item_ids, start=1):
-        progress = {
-            "type": "progress",
-            "index": index,
-            "total": total,
-            "item_id": item_id,
-        }
-        yield _ndjson_line(progress, message="progress")
-
-        try:
-            with SessionLocal() as db:
-                preview = rss_service.process_pending_item(db, item_id)
-                note = rss_service.save_processed_item(
-                    db,
-                    item_id,
-                    preview["title"],
-                    preview["content"],
-                    preview.get("tags", []),
-                )
-                note_id = note.id
-            result = {
-                "type": "item",
-                "index": index,
-                "item_id": item_id,
-                "status": "success",
-                "note_id": note_id,
-            }
-            success_count += 1
-        except Exception as exc:  # 单条失败不能中断批量任务
-            result = {
-                "type": "item",
-                "index": index,
-                "item_id": item_id,
-                "status": "failed",
-                "error": str(exc) or "处理失败",
-            }
-            failed_count += 1
-        results.append(result)
-        yield _ndjson_line(result, message="item")
-
-    summary = {
-        "type": "summary",
-        "success": success_count,
-        "failed": failed_count,
-        "results": results,
-    }
-    yield _ndjson_line(summary, message="success")
-
-
-def _ndjson_line(data: dict[str, Any], message: str) -> str:
-    """构造一条统一信封格式的 NDJSON 文本。"""
-    return json.dumps(
-        {"code": 0, "message": message, "data": data},
-        ensure_ascii=False,
-    ) + "\n"
 
 
 # ============ 定时自动抓取 ============
