@@ -604,6 +604,22 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">知识消化平台 v2.0.0</td>
+        <td class="time">2026-09-26 15:47</td>
+        <td>
+          <span class="tag">Agent</span><b>自然语言操作与 Function Calling</b>：
+          <ul>
+            <li>新增 <code>services/agent_service.py</code>，主路径使用 OpenAI 兼容接口真实的 <code>tools</code> 参数完成 Function Calling，最多连续执行 4 轮工具调用，再由模型生成中文总结。</li>
+            <li>“AI 问答”页升级为“AI 助手”聊天页：支持用户右侧气泡、AI 左侧毛玻璃卡片、快捷指令、思考中动画、操作记录和自动滚动；会话历史只保存在前端内存和本次请求中，不写入数据库。</li>
+            <li>共提供 9 个工具：搜索笔记、创建笔记、添加 RSS 源、抓取 RSS、获取统计、查看待处理、处理待办、保存待办预览和基于笔记问答。</li>
+            <li>待处理内容仍先返回预览，只有用户明确确认后才通过保存桥接工具写入笔记并标记队列完成；不提供任何删除工具，删除继续由对应页面的 confirm 二次确认完成。</li>
+            <li>当模型明确不支持 tools、tool_calls 或 function calling 时，自动切换到提示词解析降级方案；降级模式一次最多执行一个工具，JSON 首次解析失败会严格提示并重试一次。</li>
+            <li>新增 <code>POST /api/agent/chat</code> 和 <code>GET /api/agent/tools</code>，接口继续统一返回 <code>{code, message, data}</code>；本版不新增数据表和依赖。</li>
+          </ul>
+        </td>
+      </tr>
+
     </tbody>
   </table>
 
