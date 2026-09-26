@@ -368,6 +368,33 @@
     </div>
   </div>
 
+  <!-- 笔记风格重新生成弹窗 -->
+  <div class="modal-mask" id="style-modal" hidden>
+    <div class="modal glass style-modal-card">
+      <button class="modal-close" id="style-modal-close" title="关闭">×</button>
+      <h3 class="modal-title">🔁 选择重新生成风格</h3>
+      <p class="modal-desc" id="style-modal-note-title"></p>
+      <div class="style-options">
+        <button type="button" class="style-option" data-style="通俗">
+          <strong>通俗</strong>
+          <span>零基础小白能看懂</span>
+        </button>
+        <button type="button" class="style-option" data-style="精简">
+          <strong>精简</strong>
+          <span>要点式，不超过300字</span>
+        </button>
+        <button type="button" class="style-option" data-style="详细">
+          <strong>详细</strong>
+          <span>展开解释，800字以上</span>
+        </button>
+      </div>
+      <div class="modal-error" id="style-modal-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="btn-cancel-style">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast-host"></div>
 
   <script src="/static/app.js"></script>

@@ -7,6 +7,8 @@ AI 配置与调用封装（v1.1 完善真实调用）。
 - rewrite_to_plain：改写成通俗小白笔记
 - generate_tags：生成标签，失败降级空列表
 - generate_title：根据手动粘贴正文生成标题
+- evaluate_quality：AI 评估改写质量
+- rewrite_with_style：按指定风格重新改写
 """
 
 from __future__ import annotations
@@ -51,6 +53,33 @@ TITLE_PROMPT = (
     "请根据下面正文生成一个中文标题，不超过20个字，"
     "只输出标题，不要解释、不要标点结尾。\n\n正文：{content}"
 )
+
+
+# 质量评估提示：强制输出 JSON，方便后端解析
+QUALITY_PROMPT = (
+    "请从准确性、通俗性、完整性三个维度，给下面笔记的改写质量打分。"
+    "分数必须是1到5的数字，允许一位小数。"
+    "只输出 JSON，格式为："
+    '{{"score": 4, "reason": "不超过50字的简短理由"}}'
+    "不要输出 Markdown，不要解释。\n\n"
+    "笔记标题：{title}\n\n笔记内容：{content}"
+)
+
+# 风格重写的系统提示词，键名固定为前端三种选项
+STYLE_SYSTEM_PROMPTS = {
+    "通俗": (
+        "你是知识科普专家。用零基础小白能听懂的大白话改写，"
+        "分点清楚，保留核心信息，字数300-800字。"
+    ),
+    "精简": (
+        "你是笔记整理专家。把内容改成要点式笔记，"
+        "只保留关键信息，总字数不超过300字。"
+    ),
+    "详细": (
+        "你是知识讲解老师。围绕主题展开解释，必要时补充生活化类比，"
+        "内容完整，总字数不少于800字。"
+    ),
+}
 
 
 class AiError(Exception):
@@ -200,3 +229,40 @@ def generate_title(content: str) -> str:
     short_content = (content or "")[:3000]
     title = chat(TITLE_PROMPT.format(content=short_content))
     return title.strip()[:20]
+
+def evaluate_quality(title: str, content: str) -> dict[str, Any]:
+    """调用 AI 给笔记质量打分，返回评分和简短理由。"""
+    short_content = (content or "")[:3000]
+    raw = chat(QUALITY_PROMPT.format(
+        title=title or "无标题",
+        content=short_content,
+    ))
+    cleaned = re.sub(
+        r"^```(?:json)?|```$",
+        "",
+        raw.strip(),
+        flags=re.MULTILINE,
+    ).strip()
+    try:
+        payload = json.loads(cleaned)
+        score = float(payload.get("score"))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise AiError("质量评估结果格式错误，请重试") from exc
+
+    if score < 1 or score > 5:
+        raise AiError("质量评分必须在1到5之间")
+    reason = str(payload.get("reason") or "AI 未给出理由").strip()
+    return {"score": round(score, 1), "reason": reason[:200]}
+
+
+def rewrite_with_style(title: str, content: str, style: str) -> str:
+    """按指定风格重新改写正文。"""
+    system_prompt = STYLE_SYSTEM_PROMPTS.get(style)
+    if system_prompt is None:
+        raise AiError("不支持的改写风格，只能选择通俗、精简或详细")
+
+    prompt = (
+        "请按要求改写下面的笔记。\n\n"
+        f"标题：{title or '无标题'}\n\n正文：{content}"
+    )
+    return chat(prompt, system_prompt=system_prompt)

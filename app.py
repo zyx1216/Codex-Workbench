@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v2.1 · FastAPI 主入口。
+知识消化平台 v2.3 · FastAPI 主入口。
 
 - 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
 - 提供链接处理、文件上传、RSS、笔记管理、语义搜索、RAG 问答和 Agent 自然语言操作接口
@@ -97,6 +97,12 @@ class RssSourceRequest(BaseModel):
 
     name: str = ""
     url: str = ""
+
+
+class NoteRegenerateRequest(BaseModel):
+    """笔记风格重生成请求体。"""
+
+    style: str = "通俗"
 
 
 class ProcessedSaveRequest(BaseModel):
@@ -358,6 +364,50 @@ def get_tags(db: Session = Depends(get_db)):
 def get_categories(db: Session = Depends(get_db)):
     """全部分类及数量。"""
     return ok(note_service.all_categories(db))
+
+
+@app.get("/api/notes/{note_id}/related")
+def get_related_notes(note_id: int, db: Session = Depends(get_db)):
+    """返回笔记的向量相似关联笔记。"""
+    try:
+        items = note_service.get_related_notes(db, note_id)
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(items)
+
+
+@app.post("/api/notes/{note_id}/evaluate")
+def evaluate_note(note_id: int, db: Session = Depends(get_db)):
+    """立即执行 AI 质量评估。"""
+    try:
+        result = note_service.evaluate_note_quality(db, note_id)
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ai_service.AiError, ValueError) as exc:
+        return fail(str(exc))
+    return ok(result, message="质量评估完成")
+
+
+@app.post("/api/notes/{note_id}/regenerate")
+def regenerate_note(
+    note_id: int,
+    payload: NoteRegenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """按指定风格重新生成正文、标签、关联和评分。"""
+    try:
+        note, warnings = note_service.regenerate_note(
+            db, note_id, payload.style
+        )
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ai_service.AiError as exc:
+        return fail(str(exc))
+
+    message = "笔记已重新生成"
+    if warnings:
+        message = f"笔记已重新生成，但存在警告：{'；'.join(warnings)}"
+    return ok(note_service.serialize_note(note), message=message)
 
 
 @app.put("/api/notes/{note_id}")

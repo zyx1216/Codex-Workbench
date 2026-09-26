@@ -2,24 +2,23 @@
 """
 笔记数据管理。
 
-所有函数接收外部传入的 SQLAlchemy session，由 API 层控制事务。
-- create_note：新建笔记，标签存 JSON 字符串
-- list_notes：关键词、标签、分类过滤，分页，创建时间倒序
-- update_note：更新标题、正文、标签、分类
-- all_tags / all_categories：聚合标签和分类及数量
-- recent_notes / get_stats：首页数据
-- get_note_by_id / delete_note
+- 笔记 CRUD、标签和分类聚合、首页统计
+- 笔记提交后写入 ChromaDB，并按向量相关度生成 related_ids
+- 笔记保存后把质量评估任务放入后台队列，不阻塞接口
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
+import threading
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.orm import object_session
 
 from models.models import Note, PendingItem
 from services import vector_service
@@ -28,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 # 中英文逗号都作为标签分隔符
 _TAG_SPLIT = re.compile(r"[,，]")
+
+# 向量关联阈值和数量限制
+RELATED_SCORE_THRESHOLD = 0.5
+RELATED_LIMIT = 5
+
+# 质量评估后台队列：单个线程串行处理，避免并发请求太多
+_quality_queue: queue.Queue[int] = queue.Queue()
+_quality_pending: set[int] = set()
+_quality_lock = threading.Lock()
+_quality_worker_started = False
+
+# 当前进程内的评分理由缓存，不写数据库
+_quality_reasons: dict[int, str] = {}
 
 
 class NoteNotFound(Exception):
@@ -58,24 +70,66 @@ def _note_tags(note: Note) -> list[str]:
     return tags if isinstance(tags, list) else []
 
 
-
-
-def clean_tag_list(tags):
-    """标签列表去空白、去重并保持原顺序。"""
+def _related_ids(note: Note) -> list[int]:
+    """读取关联笔记 ID，JSON 损坏时返回空列表。"""
+    try:
+        ids = json.loads(note.related_ids or "[]")
+    except json.JSONDecodeError:
+        return []
     result = []
+    for value in ids if isinstance(ids, list) else []:
+        try:
+            result.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def clean_tag_list(tags: Any) -> list[str]:
+    """标签列表去空白、去重并保持原顺序。"""
+    result: list[str] = []
     for tag in tags or []:
         value = str(tag).strip()
         if value and value not in result:
             result.append(value)
     return result
 
+
+def _related_query(note: Note) -> str:
+    """构造关联检索文本：标题、标签和正文前1000字。"""
+    tag_text = ", ".join(_note_tags(note))
+    short_content = (note.content or "")[:1000]
+    return f"标题：{note.title}\n标签：{tag_text}\n正文：{short_content}"
+
+
+def _refresh_related(note: Note, session: Any, commit: bool = True) -> None:
+    """按向量相似度刷新关联笔记。"""
+    hits = vector_service.search_notes(_related_query(note), n_results=6)
+    related_ids: list[int] = []
+    for hit in hits:
+        note_id = int(hit["id"])
+        if note_id == note.id:
+            continue
+        if hit["score"] <= RELATED_SCORE_THRESHOLD:
+            continue
+        if note_id not in related_ids:
+            related_ids.append(note_id)
+        if len(related_ids) >= RELATED_LIMIT:
+            break
+    note.related_ids = json.dumps(related_ids, ensure_ascii=False)
+    if commit:
+        session.commit()
+
+
 def index_note(note: Note) -> tuple[bool, str]:
-    """把已提交笔记写入向量库；失败时只设置警告，不回滚笔记。"""
+    """把已提交笔记写入向量库并刷新关联；失败只返回警告。"""
     warning = ""
+    session = object_session(note)
     try:
         vector_service.add_note(
             note.id, note.title, note.content, _note_tags(note)
         )
+        _refresh_related(note, session, commit=True)
         indexed = True
     except vector_service.VectorError as exc:
         indexed = False
@@ -104,6 +158,8 @@ def create_note(
         original_url=(original_url or "").strip() or None,
         source=source or "手动输入",
         tags=json.dumps(clean_tag_list(tags), ensure_ascii=False),
+        related_ids="[]",
+        quality_score=None,
         category=category or "默认",
         created_at=now,
         updated_at=now,
@@ -114,6 +170,7 @@ def create_note(
     session.commit()
     session.refresh(note)
     index_note(note)
+    enqueue_quality_evaluation(note.id)
     return note
 
 
@@ -125,10 +182,7 @@ def list_notes(
     page: int = 1,
     size: int = 20,
 ) -> tuple[list[Note], int]:
-    """查询笔记，返回（当前页笔记列表, 总数）。
-
-    过滤在 Python 侧完成：标签是 JSON 字符串，SQL LIKE 会子串误匹配。
-    """
+    """查询笔记，返回（当前页笔记列表, 总数）。"""
     keyword = (keyword or "").strip().lower()
     tag = (tag or "").strip()
     category = (category or "").strip()
@@ -147,8 +201,6 @@ def list_notes(
         return True
 
     all_notes = [note for note in all_notes if matched(note)]
-
-    # 创建时间倒序，ID 兜底保证稳定
     all_notes.sort(key=lambda note: (note.created_at, note.id), reverse=True)
 
     total = len(all_notes)
@@ -166,7 +218,7 @@ def update_note(
     tags: list[str],
     category: str,
 ) -> Note:
-    """更新标题、正文、标签、分类；原文链接和来源不动，刷新 updated_at。"""
+    """更新标题、正文、标签、分类，并刷新向量索引和关联。"""
     note = get_note_by_id(session, note_id)
     note.title = (title or "").strip() or "无标题"
     note.content = content or ""
@@ -179,8 +231,9 @@ def update_note(
     warning = ""
     try:
         vector_service.update_note(
-            note.id, note.title, note.content, tags or []
+            note.id, note.title, note.content, clean_tag_list(tags)
         )
+        _refresh_related(note, session, commit=True)
         setattr(note, "vector_indexed", True)
     except vector_service.VectorError as exc:
         warning = str(exc)
@@ -191,7 +244,7 @@ def update_note(
 
 
 def all_tags(session: Any) -> list[dict[str, Any]]:
-    """聚合全部笔记标签，返回 [{name, count}]，按数量降序、名称兜底。"""
+    """聚合全部笔记标签，返回 [{name, count}]。"""
     counter: dict[str, int] = {}
     for note in session.scalars(select(Note)).all():
         for tag in _note_tags(note):
@@ -202,7 +255,7 @@ def all_tags(session: Any) -> list[dict[str, Any]]:
 
 
 def all_categories(session: Any) -> list[dict[str, Any]]:
-    """聚合分类，返回 [{name, count}]，按数量降序。"""
+    """聚合分类，返回 [{name, count}]。"""
     counter: dict[str, int] = {}
     for note in session.scalars(select(Note)).all():
         counter[note.category] = counter.get(note.category, 0) + 1
@@ -212,7 +265,7 @@ def all_categories(session: Any) -> list[dict[str, Any]]:
 
 
 def recent_notes(session: Any, limit: int = 5) -> list[Note]:
-    """返回最近 N 条笔记，排序与列表一致。"""
+    """返回最近 N 条笔记。"""
     notes, _ = list_notes(session, page=1, size=max(limit, 1))
     return notes
 
@@ -225,9 +278,6 @@ def get_stats(session: Any) -> dict[str, int]:
         1 for note in notes
         if note.created_at and note.created_at.date() == today
     )
-    # 待处理数：用 ORM 聚合函数统计 pending 状态条数
-    from sqlalchemy import func
-
     pending_count = session.scalar(
         select(func.count()).select_from(PendingItem)
         .where(PendingItem.status == "pending")
@@ -250,7 +300,7 @@ def get_note_by_id(session: Any, note_id: int) -> Note:
 
 
 def delete_note(session: Any, note_id: int) -> dict[str, str | bool]:
-    """直接真删笔记（本版无回收站）；不存在抛 NoteNotFound。"""
+    """直接真删笔记；向量删除失败不回滚笔记删除。"""
     note = get_note_by_id(session, note_id)
     session.delete(note)
     session.commit()
@@ -263,11 +313,101 @@ def delete_note(session: Any, note_id: int) -> dict[str, str | bool]:
         indexed = False
         warning = str(exc)
         logger.warning("笔记已删除，但向量索引删除失败：%s", exc)
+    _quality_reasons.pop(note_id, None)
     return {"indexed": indexed, "warning": warning}
 
 
+def get_related_notes(session: Any, note_id: int, limit: int = 5) -> list[dict[str, Any]]:
+    """返回仍存在的关联笔记，失效 ID 自动跳过。"""
+    note = get_note_by_id(session, note_id)
+    items: list[dict[str, Any]] = []
+    for related_id in _related_ids(note)[:max(limit, 1)]:
+        related = session.get(Note, related_id)
+        if related is not None:
+            items.append(serialize_related_note(related))
+    return items
+
+
+def serialize_related_note(note: Note) -> dict[str, Any]:
+    """关联笔记卡片数据：标题、标签和正文前200字。"""
+    return {
+        "id": note.id,
+        "title": note.title,
+        "tags": _note_tags(note),
+        "summary": (note.content or "")[:200],
+    }
+
+
+def set_quality_score(session: Any, note_id: int, score: float, reason: str = "") -> Note:
+    """设置笔记质量评分。"""
+    note = get_note_by_id(session, note_id)
+    score = float(score)
+    if score < 1 or score > 5:
+        raise ValueError("质量评分必须在1到5之间")
+    note.quality_score = round(score, 1)
+    session.commit()
+    if reason:
+        _quality_reasons[note.id] = reason[:200]
+    return note
+
+
+def evaluate_note_quality(session: Any, note_id: int) -> dict[str, Any]:
+    """立即执行一次 AI 质量评估并保存分数。"""
+    note = get_note_by_id(session, note_id)
+    result = evaluate_with_ai(note)
+    note.quality_score = result["score"]
+    session.commit()
+    return result
+
+
+def evaluate_with_ai(note: Note) -> dict[str, Any]:
+    """调用 AI 服务评估单条笔记，并缓存理由。"""
+    from services import ai_service
+
+    result = ai_service.evaluate_quality(note.title, note.content)
+    _quality_reasons[note.id] = result["reason"]
+    return result
+
+
+def regenerate_note(
+    session: Any,
+    note_id: int,
+    style: str,
+) -> tuple[Note, list[str]]:
+    """按风格重新生成，并更新标签、关联和质量评分。"""
+    from services import ai_service
+
+    note = get_note_by_id(session, note_id)
+    rewritten = ai_service.rewrite_with_style(note.title, note.content, style)
+    tags = clean_tag_list(ai_service.generate_tags(note.title, rewritten))
+    note.content = rewritten
+    note.tags = json.dumps(tags, ensure_ascii=False)
+    note.related_ids = "[]"
+    note.updated_at = datetime.now()
+    session.commit()
+    session.refresh(note)
+
+    warnings: list[str] = []
+    try:
+        vector_service.update_note(note.id, note.title, note.content, tags)
+        _refresh_related(note, session, commit=True)
+    except vector_service.VectorError as exc:
+        warnings.append(str(exc))
+        logger.warning("重生成后向量更新失败：%s", exc)
+
+    try:
+        evaluation = evaluate_with_ai(note)
+        note.quality_score = evaluation["score"]
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - AI 异常不应抹掉已生成正文
+        warnings.append(str(exc))
+        logger.warning("重生成后质量评估失败：%s", exc)
+
+    return note, warnings
+
+
 def serialize_note(note: Note) -> dict[str, Any]:
-    """笔记转前端字典：标签还原成数组，时间转 ISO 字符串。"""
+    """笔记转前端字典。"""
     return {
         "id": note.id,
         "title": note.title,
@@ -275,9 +415,53 @@ def serialize_note(note: Note) -> dict[str, Any]:
         "original_url": note.original_url,
         "source": note.source,
         "tags": _note_tags(note),
+        "related_ids": _related_ids(note),
+        "quality_score": note.quality_score,
+        "quality_reason": _quality_reasons.get(
+            note.id, "可重新评估获取详细理由"
+        ),
         "category": note.category,
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
         "vector_indexed": bool(getattr(note, "vector_indexed", True)),
         "vector_warning": str(getattr(note, "vector_warning", "")),
     }
+
+
+# ============ 后台质量评估 ============
+def enqueue_quality_evaluation(note_id: int) -> None:
+    """把笔记 ID 放入质量评估队列；重复 ID 不重复入队。"""
+    global _quality_worker_started
+
+    with _quality_lock:
+        if note_id in _quality_pending:
+            return
+        _quality_pending.add(note_id)
+    _quality_queue.put(note_id)
+
+    with _quality_lock:
+        if not _quality_worker_started:
+            worker = threading.Thread(target=_quality_worker, daemon=True)
+            worker.start()
+            _quality_worker_started = True
+
+
+def _quality_worker() -> None:
+    """串行执行质量评估，失败只记录日志。"""
+    while True:
+        note_id = _quality_queue.get()
+        try:
+            from services.db import SessionLocal
+
+            with SessionLocal() as session:
+                note = session.get(Note, note_id)
+                if note is not None:
+                    result = evaluate_with_ai(note)
+                    note.quality_score = result["score"]
+                    session.commit()
+        except Exception as exc:  # noqa: BLE001 - 后台任务不能退出
+            logger.warning("笔记 %s 质量评估失败：%s", note_id, exc)
+        finally:
+            with _quality_lock:
+                _quality_pending.discard(note_id)
+            _quality_queue.task_done()

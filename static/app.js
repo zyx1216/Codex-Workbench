@@ -13,11 +13,11 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 /* ============ tab 切换 ============ */
 function initTabs() {
-  $$(".nav-btn").forEach((btn) => {
+  $$$(".nav-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const target = btn.dataset.tab;
-      $$(".nav-btn").forEach((b) => b.classList.toggle("active", b === btn));
-      $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === target));
+      $$$(".nav-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      $$$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === target));
       // 切到笔记库：拉筛选选项和列表；切回首页：刷新统计和最近笔记
       if (target === "notes") {
         initNotesFilters();
@@ -232,13 +232,14 @@ async function saveNote() {
   const btn = $("#btn-save-note");
   btn.disabled = true;
   try {
-    await fetchJson("/api/notes", {
+    const body = await fetchJson("/api/notes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(previewData),
     });
     toast("已保存到笔记库", "success");
     closeLinkModal();
+    startQualityPolling(body.data);
   } catch (err) {
     toast(err.message || "保存失败", "error");
   } finally {
@@ -395,6 +396,9 @@ function renderNotes(items) {
 function buildNoteCard(note) {
   const card = document.createElement("div");
   card.className = "card glass note-card";
+  if (note.quality_score !== null && note.quality_score !== undefined && note.quality_score < 3) {
+    card.classList.add("low-quality");
+  }
   card.dataset.noteId = note.id;
 
   // 卡片头部：标题、分类、来源、时间；点头部展开
@@ -407,6 +411,7 @@ function buildNoteCard(note) {
       <span class="note-source">${escapeHtml(note.source || "手动输入")}</span>
       <span class="note-time">${formatTime(note.created_at)}</span>
     </div>`;
+  head.appendChild(buildQualityBadge(note));
   if (note.score !== undefined) {
     const score = document.createElement("span");
     score.className = "score-badge";
@@ -437,6 +442,20 @@ function buildNoteCard(note) {
   body.textContent = note.content || "";
   detail.appendChild(body);
 
+  const qualityRow = document.createElement("div");
+  qualityRow.className = "note-quality-row";
+  qualityRow.appendChild(buildQualityBadge(note, true));
+  detail.appendChild(qualityRow);
+
+  const relatedSection = document.createElement("div");
+  relatedSection.className = "related-section";
+  relatedSection.innerHTML = `<div class="related-title">🔗 相关笔记</div>`;
+  const relatedList = document.createElement("div");
+  relatedList.className = "related-list";
+  relatedList.textContent = "展开后加载";
+  relatedSection.appendChild(relatedList);
+  detail.appendChild(relatedSection);
+
   const detailActions = document.createElement("div");
   detailActions.className = "note-detail-actions";
   if (note.original_url) {
@@ -448,6 +467,11 @@ function buildNoteCard(note) {
     link.textContent = "🔗 查看原文";
     detailActions.appendChild(link);
   }
+
+  const regenerateBtn = document.createElement("button");
+  regenerateBtn.className = "btn btn-ghost btn-sm";
+  regenerateBtn.textContent = "🔁 重新生成";
+  detailActions.appendChild(regenerateBtn);
 
   const editBtn = document.createElement("button");
   editBtn.className = "btn btn-ghost btn-sm";
@@ -466,6 +490,12 @@ function buildNoteCard(note) {
   head.addEventListener("click", () => {
     detail.hidden = !detail.hidden;
     card.classList.toggle("expanded", !detail.hidden);
+    if (!detail.hidden) ensureRelatedLoaded(card, note);
+  });
+
+  regenerateBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openStyleModal(note);
   });
 
   editBtn.addEventListener("click", (e) => {
@@ -625,7 +655,7 @@ async function loadRecentNotes() {
   } catch (_) { /* 最近笔记加载失败保持空状态 */ }
 }
 
-async function goToNote(noteId) {
+async function goToNote(noteId, resetView = true) {
   // 切到笔记库
   $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === "notes"));
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "notes"));
@@ -637,6 +667,8 @@ async function goToNote(noteId) {
     const detail = $(".note-detail", card);
     detail.hidden = false;
     card.classList.add("expanded");
+    const note = { id: noteId };
+    ensureRelatedLoaded(card, note);
     card.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 }
@@ -791,13 +823,14 @@ async function saveUploadNote() {
   const btn = $("#btn-save-upload");
   btn.disabled = true;
   try {
-    await fetchJson("/api/notes", {
+    const body = await fetchJson("/api/notes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(uploadPreview),
     });
     toast("已保存到笔记库", "success");
     closeUploadModal();
+    startQualityPolling(body.data);
   } catch (err) {
     toast(err.message || "保存失败", "error");
   } finally {
@@ -1602,6 +1635,202 @@ function bindQaPage() {
   });
 }
 
+
+/* ============ v2.3：质量评分、关联笔记、风格重生成 ============ */
+let styleTargetNote = null;
+const qualityPollers = {};
+
+function hasScore(note) {
+  return note?.quality_score !== null && note?.quality_score !== undefined;
+}
+
+function buildQualityBadge(note, detailed = false) {
+  const reason = note.quality_reason || "可重新评估获取详细理由";
+  if (detailed) {
+    const wrap = document.createElement("span");
+    wrap.className = "quality-detail-wrap";
+    const badge = buildQualityBadge(note, false);
+    const reasonEl = document.createElement("span");
+    reasonEl.className = "quality-reason";
+    reasonEl.textContent = reason;
+    wrap.append(badge, reasonEl);
+    return wrap;
+  }
+
+  const badge = document.createElement("span");
+  const scored = hasScore(note);
+  badge.className = `quality-badge ${scored && note.quality_score < 3 ? "is-low" : ""} ${scored ? "" : "is-pending"}`;
+  badge.title = scored ? reason : "评分正在后台执行";
+  badge.textContent = scored
+    ? `⭐ ${Number(note.quality_score).toFixed(1)}/5`
+    : "⭐ 评估中";
+  return badge;
+}
+
+async function ensureRelatedLoaded(card, note) {
+  if (!card || !note?.id) return;
+  if (card.dataset.relatedState === "loaded" || card.dataset.relatedState === "loading") return;
+
+  const list = $(".related-list", card);
+  card.dataset.relatedState = "loading";
+  list.className = "related-list";
+  list.textContent = "正在加载关联笔记…";
+
+  try {
+    const body = await fetchJson(`/api/notes/${note.id}/related`);
+    renderRelatedList(list, body.data || []);
+    card.dataset.relatedState = "loaded";
+  } catch (err) {
+    list.className = "related-list related-error";
+    list.textContent = err.message || "关联笔记加载失败";
+    card.dataset.relatedState = "error";
+  }
+}
+
+function renderRelatedList(list, items) {
+  list.className = "related-list";
+  list.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "related-empty";
+    empty.textContent = "暂无相关笔记";
+    list.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "related-card";
+    const tagText = (item.tags || []).map((tag) => `#${tag}`).join(" ");
+    card.innerHTML = `
+      <span class="related-card-title">${escapeHtml(item.title || "无标题")}</span>
+      <span class="related-card-tags">${escapeHtml(tagText)}</span>
+      <span class="related-card-summary">${escapeHtml(item.summary || "")}</span>`;
+    card.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openRelatedNote(item.id);
+    });
+    list.appendChild(card);
+  });
+}
+
+function resetNotesView() {
+  setSearchMode("keyword");
+  $("#notes-search").value = "";
+  $("#notes-tag-filter").value = "";
+  $("#notes-category-filter").value = "";
+}
+
+async function openRelatedNote(noteId) {
+  resetNotesView();
+  // 已手动清空搜索和筛选，不需要跳转方法再改变视图状态
+  await goToNote(noteId, false);
+}
+
+function replaceNoteCard(fresh) {
+  const oldCard = $(`.note-card[data-note-id="${fresh.id}"]`);
+  if (!oldCard) return null;
+  const wasExpanded = oldCard.classList.contains("expanded");
+  const newCard = buildNoteCard(fresh);
+  oldCard.replaceWith(newCard);
+  if (wasExpanded) {
+    const detail = $(".note-detail", newCard);
+    detail.hidden = false;
+    newCard.classList.add("expanded");
+    ensureRelatedLoaded(newCard, fresh);
+  }
+  return newCard;
+}
+
+function startQualityPolling(note) {
+  if (!note?.id || qualityPollers[note.id]) return;
+  let attempts = 0;
+
+  qualityPollers[note.id] = setInterval(async () => {
+    attempts += 1;
+    try {
+      const body = await fetchJson(`/api/notes/${note.id}`);
+      const fresh = body.data;
+      if (hasScore(fresh)) {
+        stopQualityPolling(note.id);
+        const replaced = replaceNoteCard(fresh);
+        if (!replaced && $(".tab.active")?.dataset.tab === "home") {
+          loadRecentNotes();
+        }
+      }
+    } catch (_) {
+      // 单次轮询失败继续重试，达到上限后停止
+    }
+    if (attempts >= 5) stopQualityPolling(note.id);
+  }, 2500);
+}
+
+function stopQualityPolling(noteId) {
+  const timer = qualityPollers[noteId];
+  if (!timer) return;
+  clearInterval(timer);
+  delete qualityPollers[noteId];
+}
+
+function openStyleModal(note) {
+  styleTargetNote = note;
+  $("#style-modal-note-title").textContent = note.title || "无标题";
+  $("#style-modal-error").hidden = true;
+  $$(".style-option").forEach((button) => {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+  });
+  $("#style-modal").hidden = false;
+}
+
+function closeStyleModal() {
+  $("#style-modal").hidden = true;
+  styleTargetNote = null;
+}
+
+async function chooseRegenerateStyle(button) {
+  if (!styleTargetNote) return;
+  const errorBox = $("#style-modal-error");
+  const buttons = $$(".style-option");
+  const oldHtml = button.innerHTML;
+  errorBox.hidden = true;
+  buttons.forEach((item) => { item.disabled = true; });
+  button.innerHTML = "⏳ 正在重新生成…";
+
+  try {
+    const body = await fetchJson(`/api/notes/${styleTargetNote.id}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style: button.dataset.style }),
+    });
+    closeStyleModal();
+    const card = replaceNoteCard(body.data);
+    if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+    toast(body.message || "笔记已重新生成", body.message?.includes("警告") ? "warning" : "success");
+  } catch (err) {
+    errorBox.textContent = err.message || "重新生成失败";
+    errorBox.hidden = false;
+  } finally {
+    buttons.forEach((item) => {
+      item.disabled = false;
+      item.classList.remove("is-loading");
+    });
+    button.innerHTML = oldHtml;
+  }
+}
+
+function bindStyleModal() {
+  $("#style-modal-close").addEventListener("click", closeStyleModal);
+  $("#btn-cancel-style").addEventListener("click", closeStyleModal);
+  $$(".style-option").forEach((button) => {
+    button.addEventListener("click", () => chooseRegenerateStyle(button));
+  });
+  $("#style-modal").addEventListener("click", (event) => {
+    if (event.target === $("#style-modal")) closeStyleModal();
+  });
+}
+
 /* ============ 按钮波纹 ============ */
 function bindRipple() {
   $$(".btn").forEach((btn) => {
@@ -1626,6 +1855,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindNotesFilters();
   bindNotesSearch();
   bindEditModal();
+  bindStyleModal();
   bindSettings();
   bindUploadModal();
   bindFeedPage();
