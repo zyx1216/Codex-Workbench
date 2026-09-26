@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -21,6 +22,9 @@ from typing import Any
 from sqlalchemy import select
 
 from models.models import Note, PendingItem
+from services import vector_service
+
+logger = logging.getLogger(__name__)
 
 # 中英文逗号都作为标签分隔符
 _TAG_SPLIT = re.compile(r"[,，]")
@@ -54,6 +58,23 @@ def _note_tags(note: Note) -> list[str]:
     return tags if isinstance(tags, list) else []
 
 
+def index_note(note: Note) -> tuple[bool, str]:
+    """把已提交笔记写入向量库；失败时只设置警告，不回滚笔记。"""
+    warning = ""
+    try:
+        vector_service.add_note(
+            note.id, note.title, note.content, _note_tags(note)
+        )
+        indexed = True
+    except vector_service.VectorError as exc:
+        indexed = False
+        warning = str(exc)
+        logger.warning("笔记保留成功，但向量索引失败：%s", exc)
+    setattr(note, "vector_indexed", indexed)
+    setattr(note, "vector_warning", warning)
+    return indexed, warning
+
+
 def create_note(
     session: Any,
     title: str,
@@ -81,6 +102,7 @@ def create_note(
         return note
     session.commit()
     session.refresh(note)
+    index_note(note)
     return note
 
 
@@ -142,6 +164,18 @@ def update_note(
     note.updated_at = datetime.now()
     session.commit()
     session.refresh(note)
+
+    warning = ""
+    try:
+        vector_service.update_note(
+            note.id, note.title, note.content, tags or []
+        )
+        setattr(note, "vector_indexed", True)
+    except vector_service.VectorError as exc:
+        warning = str(exc)
+        setattr(note, "vector_indexed", False)
+        logger.warning("笔记更新成功，但向量索引更新失败：%s", exc)
+    setattr(note, "vector_warning", warning)
     return note
 
 
@@ -180,7 +214,7 @@ def get_stats(session: Any) -> dict[str, int]:
         1 for note in notes
         if note.created_at and note.created_at.date() == today
     )
-    # 待处理数：用聚合函数统计 pending 状态条数
+    # 待处理数：用 ORM 聚合函数统计 pending 状态条数
     from sqlalchemy import func
 
     pending_count = session.scalar(
@@ -204,11 +238,21 @@ def get_note_by_id(session: Any, note_id: int) -> Note:
     return note
 
 
-def delete_note(session: Any, note_id: int) -> None:
+def delete_note(session: Any, note_id: int) -> dict[str, str | bool]:
     """直接真删笔记（本版无回收站）；不存在抛 NoteNotFound。"""
     note = get_note_by_id(session, note_id)
     session.delete(note)
     session.commit()
+
+    warning = ""
+    indexed = True
+    try:
+        vector_service.delete_note(note_id)
+    except vector_service.VectorError as exc:
+        indexed = False
+        warning = str(exc)
+        logger.warning("笔记已删除，但向量索引删除失败：%s", exc)
+    return {"indexed": indexed, "warning": warning}
 
 
 def serialize_note(note: Note) -> dict[str, Any]:
@@ -223,4 +267,6 @@ def serialize_note(note: Note) -> dict[str, Any]:
         "category": note.category,
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+        "vector_indexed": bool(getattr(note, "vector_indexed", True)),
+        "vector_warning": str(getattr(note, "vector_warning", "")),
     }

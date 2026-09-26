@@ -15,6 +15,7 @@
       <button class="nav-btn active" data-tab="home">首页</button>
       <button class="nav-btn" data-tab="notes">笔记库</button>
       <button class="nav-btn" data-tab="feed">订阅</button>
+      <button class="nav-btn" data-tab="qa">AI 问答</button>
       <button class="nav-btn" data-tab="settings">设置</button>
     </nav>
   </header>
@@ -63,6 +64,10 @@
       <h2 class="section-title gradient-text">笔记库</h2>
       <div class="toolbar">
         <input type="text" id="notes-search" class="input" placeholder="🔍 搜索标题或内容…" />
+        <div class="segmented" id="search-mode" role="group" aria-label="搜索模式">
+          <button type="button" class="segmented-btn active" data-mode="keyword">关键词搜索</button>
+          <button type="button" class="segmented-btn" data-mode="semantic">语义搜索</button>
+        </div>
         <select id="notes-tag-filter" class="input">
           <option value="">全部标签</option>
         </select>
@@ -95,6 +100,34 @@
 
       <h2 class="section-title">待处理队列</h2>
       <div id="pending-list" class="feed-list"></div>
+    </section>
+
+
+    <!-- AI 问答 -->
+    <section class="tab" data-tab="qa">
+      <h2 class="section-title gradient-text">AI 问答</h2>
+
+      <div class="card glass vector-panel">
+        <div class="vector-info">
+          <span class="vector-count" id="qa-vector-count">向量笔记：0</span>
+          <span class="vector-state" id="qa-vector-state">状态：空闲</span>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
+        <p class="hint vector-hint">首次使用语义搜索会下载本地向量模型，可能耗时较久；模型只下载这一次。</p>
+      </div>
+
+      <div class="card glass form-card qa-form-card">
+        <label class="field">
+          <span class="field-label">基于笔记库提问</span>
+          <textarea id="qa-question" class="input textarea" rows="5"
+                    placeholder="例如：这些笔记里关于人工智能的核心观点是什么？"></textarea>
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-ask">提问</button>
+        </div>
+      </div>
+
+      <div id="qa-result" class="qa-result"></div>
     </section>
 
     <!-- 设置 -->

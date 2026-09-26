@@ -10,3 +10,4 @@ python-multipart
 pdfplumber
 python-docx
 APScheduler>=3.10,<4
+chromadb

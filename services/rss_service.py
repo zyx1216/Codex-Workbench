@@ -289,6 +289,8 @@ def save_processed_item(
     item.status = "done"
     session.commit()
     session.refresh(note)
+    # 队列状态和笔记在同一事务提交后，再建立向量索引
+    note_service.index_note(note)
     return note
 
 

@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v1.5 · FastAPI 主入口。
+知识消化平台 v1.6 · FastAPI 主入口。
 
-- 启动时初始化数据目录和 SQLite 表
-- 挂载 /static 提供前端资源
-- 保留既有功能；新增定时自动抓取和抓取日志
-- 根路径返回单页应用入口 index.html
+- 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
+- 提供链接处理、文件上传、RSS、笔记管理、语义搜索和 RAG 问答接口
+- 所有 API 统一返回 {code, message, data}
 """
 
 from contextlib import asynccontextmanager
@@ -21,19 +20,25 @@ from sqlalchemy.orm import Session
 
 import config
 from services import (
-    ai_service, crawler_service, file_service,
-    note_service, rss_service, scheduler_service,
+    ai_service,
+    crawler_service,
+    file_service,
+    note_service,
+    rag_service,
+    rss_service,
+    scheduler_service,
+    vector_service,
 )
 from services.db import get_db, init_db
 
-# 启动时确保表就绪（幂等）
-init_db()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """应用启动时启动调度器，关闭时停止后台线程。"""
+    """应用生命周期：启动后台服务，关闭时清理调度线程。"""
     init_db()
     scheduler_service.start_scheduler()
+    # SQLite 有笔记但向量库为空时后台补齐，不阻塞 FastAPI 启动
+    vector_service.start_startup_sync_if_needed()
     yield
     scheduler_service.stop_scheduler()
 
@@ -104,18 +109,36 @@ class SchedulerConfigRequest(BaseModel):
     fetch_time: str = "08:00"
 
 
+class SearchRequest(BaseModel):
+    """语义搜索请求体。"""
+
+    query: str
+
+
+class AskRequest(BaseModel):
+    """RAG 问答请求体。"""
+
+    question: str
+
+
 def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
     """统一成功响应信封。"""
     return {"code": 0, "message": message, "data": data}
 
 
-# ============ 页面入口与 v1.0 端点 ============
+def fail(message: str, data: Any = None) -> dict[str, Any]:
+    """统一业务失败响应信封。"""
+    return {"code": 1, "message": message, "data": data}
+
+
+# ============ 页面入口 ============
 @app.get("/")
 def index() -> FileResponse:
     """单页应用入口。"""
     return FileResponse(STATIC_DIR / "index.html")
 
 
+# ============ 首页统计与 AI 配置 ============
 @app.get("/api/stats")
 def get_stats(db: Session = Depends(get_db)):
     """首页概览：真实统计数据。"""
@@ -141,28 +164,23 @@ def post_ai_config(payload: AIConfig):
 
 @app.post("/api/ai-test")
 def post_ai_test():
-    """测试连接（本期维持 v1.0 占位）。"""
+    """测试连接（维持占位）。"""
     return ok(None, message=ai_service.test_connection())
 
 
-# ============ v1.1：链接处理 ============
+# ============ 链接处理 ============
 @app.post("/api/process-url")
 def process_url(payload: ProcessUrlRequest):
     """抓取网页正文并 AI 改写，返回预览数据（本端点不写库）。"""
     try:
-        # 第一步：抓取网页
         html_bytes, final_url = crawler_service.fetch_url(payload.url)
-        # 第二步：提取标题和正文
         extracted = crawler_service.extract_content(html_bytes, final_url)
-        # 第三步：AI 改写成通俗笔记
         rewritten = ai_service.rewrite_to_plain(
             extracted["title"], extracted["content"]
         )
-        # 第四步：生成标签，失败降级空列表
         tags = ai_service.generate_tags(extracted["title"], extracted["content"])
     except (crawler_service.CrawlError, ai_service.AiError) as exc:
-        # 抓取或改写失败：统一返回 code=1，不抛 500
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
 
     return ok({
         "title": extracted["title"],
@@ -172,30 +190,25 @@ def process_url(payload: ProcessUrlRequest):
     })
 
 
-# ============ v1.3：文件上传解析 ============
-# 文件大小上限 20MB
+# ============ 文件上传解析 ============
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
 @app.post("/api/upload-file")
 async def upload_file(file: UploadFile = File(...)):
     """保存上传文件、解析正文并 AI 改写，返回预览数据（本端点不写库）。"""
-    # 只取文件名，防止客户端传入带路径的文件名造成路径穿越
     safe_name = Path(file.filename or "").name
     if not safe_name:
-        return {"code": 1, "message": "未获取到文件名", "data": None}
+        return fail("未获取到文件名")
 
     suffix = Path(safe_name).suffix.lower()
     if suffix not in file_service.ALLOWED_SUFFIXES:
-        return {"code": 1,
-                "message": "不支持的文件格式，仅支持 PDF、Word（docx）和 txt",
-                "data": None}
+        return fail("不支持的文件格式，仅支持 PDF、Word（docx）和 txt")
 
     data = await file.read()
     if len(data) > MAX_UPLOAD_SIZE:
-        return {"code": 1, "message": "文件超过 20MB 大小限制", "data": None}
+        return fail("文件超过 20MB 大小限制")
 
-    # 文件名加时间戳，避免重名覆盖
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     saved_name = f"{timestamp}_{safe_name}"
     saved_path = config.UPLOAD_DIR / saved_name
@@ -208,7 +221,7 @@ async def upload_file(file: UploadFile = File(...)):
         )
         tags = ai_service.generate_tags(parsed["title"], parsed["content"])
     except (file_service.FileParseError, ai_service.AiError) as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
 
     return ok({
         "title": parsed["title"],
@@ -218,10 +231,10 @@ async def upload_file(file: UploadFile = File(...)):
     })
 
 
-# ============ v1.1：笔记 CRUD ============
+# ============ 笔记 CRUD ============
 @app.post("/api/notes")
 def create_note(payload: NoteCreateRequest, db: Session = Depends(get_db)):
-    """保存预览确认后的笔记。"""
+    """保存预览确认后的笔记；向量失败时保留笔记并返回警告。"""
     note = note_service.create_note(
         session=db,
         title=payload.title,
@@ -231,7 +244,11 @@ def create_note(payload: NoteCreateRequest, db: Session = Depends(get_db)):
         source=payload.source,
         category=payload.category,
     )
-    return ok(note_service.serialize_note(note), message="笔记已保存")
+    data = note_service.serialize_note(note)
+    message = "笔记已保存"
+    if data.get("vector_warning"):
+        message = f"笔记已保存，但向量索引失败，可稍后手动同步"
+    return ok(data, message=message)
 
 
 @app.get("/api/notes")
@@ -243,7 +260,7 @@ def list_notes(
     size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """笔记列表：支持关键词、标签、分类过滤和分页，按创建时间倒序。"""
+    """笔记列表：支持关键词、标签、分类过滤和分页。"""
     items, total = note_service.list_notes(
         db, keyword=keyword, tag=tag, category=category, page=page, size=size
     )
@@ -267,15 +284,19 @@ def get_note(note_id: int, db: Session = Depends(get_db)):
 
 @app.delete("/api/notes/{note_id}")
 def delete_note(note_id: int, db: Session = Depends(get_db)):
-    """直接真删笔记。"""
+    """直接真删笔记；向量删除失败不回滚笔记删除。"""
     try:
-        note_service.delete_note(db, note_id)
+        result = note_service.delete_note(db, note_id)
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return ok(None, message="笔记已删除")
+
+    message = "笔记已删除"
+    if result.get("warning"):
+        message = "笔记已删除，但向量索引删除失败，可稍后手动同步"
+    return ok(result, message=message)
 
 
-# ============ v1.2：标签、分类、笔记更新 ============
+# ============ 标签、分类、笔记更新 ============
 @app.get("/api/tags")
 def get_tags(db: Session = Depends(get_db)):
     """全部标签及数量。"""
@@ -302,11 +323,15 @@ def update_note(note_id: int, payload: NoteUpdateRequest, db: Session = Depends(
         )
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return ok(note_service.serialize_note(note), message="笔记已更新")
+
+    data = note_service.serialize_note(note)
+    message = "笔记已更新"
+    if data.get("vector_warning"):
+        message = "笔记已更新，但向量索引更新失败，可稍后手动同步"
+    return ok(data, message=message)
 
 
-
-# ============ v1.4：RSS 订阅与待处理队列 ============
+# ============ RSS 订阅与待处理队列 ============
 @app.get("/api/rss-sources")
 def get_rss_sources(db: Session = Depends(get_db)):
     """返回全部 RSS 源。"""
@@ -320,7 +345,7 @@ def post_rss_source(payload: RssSourceRequest, db: Session = Depends(get_db)):
     try:
         source = rss_service.add_source(db, payload.name, payload.url)
     except rss_service.RssError as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
     return ok(rss_service.serialize_source(source), message="RSS 源已添加")
 
 
@@ -342,7 +367,7 @@ def fetch_rss_source(source_id: int, db: Session = Depends(get_db)):
     except rss_service.RssSourceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except rss_service.RssError as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
     return ok({"added": added}, message=f"抓取完成，新增 {added} 条")
 
 
@@ -371,12 +396,16 @@ def process_pending(item_id: int, db: Session = Depends(get_db)):
         crawler_service.CrawlError,
         ai_service.AiError,
     ) as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
     return ok(preview, message="改写完成，请确认后保存")
 
 
 @app.post("/api/pending/{item_id}/save")
-def save_pending(item_id: int, payload: ProcessedSaveRequest, db: Session = Depends(get_db)):
+def save_pending(
+    item_id: int,
+    payload: ProcessedSaveRequest,
+    db: Session = Depends(get_db),
+):
     """保存预览笔记并标记队列项完成。"""
     try:
         note = rss_service.save_processed_item(
@@ -385,8 +414,13 @@ def save_pending(item_id: int, payload: ProcessedSaveRequest, db: Session = Depe
     except rss_service.PendingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except rss_service.RssError as exc:
-        return {"code": 1, "message": str(exc), "data": None}
-    return ok(note_service.serialize_note(note), message="笔记已保存")
+        return fail(str(exc))
+
+    data = note_service.serialize_note(note)
+    message = "笔记已保存"
+    if data.get("vector_warning"):
+        message = "笔记已保存，但向量索引失败，可稍后手动同步"
+    return ok(data, message=message)
 
 
 @app.post("/api/pending/{item_id}/skip")
@@ -397,7 +431,7 @@ def skip_pending(item_id: int, db: Session = Depends(get_db)):
     except rss_service.PendingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except rss_service.RssError as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
     return ok(None, message="已跳过")
 
 
@@ -411,8 +445,7 @@ def delete_pending(item_id: int, db: Session = Depends(get_db)):
     return ok(None, message="待处理项已删除")
 
 
-
-# ============ v1.5：定时自动抓取 ============
+# ============ 定时自动抓取 ============
 @app.get("/api/scheduler/config")
 def get_scheduler_config():
     """读取定时抓取配置。"""
@@ -427,7 +460,7 @@ def put_scheduler_config(payload: SchedulerConfigRequest):
             payload.enabled, payload.fetch_time
         )
     except scheduler_service.SchedulerError as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
     return ok(cfg, message="定时抓取设置已保存")
 
 
@@ -443,9 +476,60 @@ def scheduler_run_now():
     try:
         result = scheduler_service.run_now()
     except scheduler_service.SchedulerBusy as exc:
-        return {"code": 1, "message": str(exc), "data": None}
+        return fail(str(exc))
     return ok(result, message=f"抓取完成，新增 {result['total_added']} 条")
 
 
-# 静态资源（CSS / JS）放在 /static 下，需在所有路由之后挂载
+# ============ v1.6：语义搜索、RAG 问答、向量同步 ============
+@app.post("/api/search")
+def semantic_search(payload: SearchRequest, db: Session = Depends(get_db)):
+    """语义搜索笔记，返回完整笔记和相关度分数。"""
+    try:
+        search_results = vector_service.search_notes(payload.query, n_results=10)
+    except vector_service.VectorError as exc:
+        return fail(str(exc))
+
+    items: list[dict[str, Any]] = []
+    for result in search_results:
+        try:
+            note = note_service.get_note_by_id(db, result["id"])
+        except note_service.NoteNotFound:
+            continue
+        item = note_service.serialize_note(note)
+        item["score"] = result["score"]
+        items.append(item)
+    return ok({"items": items, "total": len(items)})
+
+
+@app.post("/api/ask")
+def ask(payload: AskRequest, db: Session = Depends(get_db)):
+    """基于笔记库进行单轮 RAG 问答。"""
+    try:
+        result = rag_service.answer_question(payload.question, db)
+    except (vector_service.VectorError, ai_service.AiError) as exc:
+        return fail(str(exc))
+    return ok(result)
+
+
+@app.get("/api/vector/stats")
+def vector_stats():
+    """读取向量库数量和同步状态。"""
+    try:
+        stats = vector_service.get_stats()
+    except vector_service.VectorError as exc:
+        return fail(str(exc))
+    return ok(stats)
+
+
+@app.post("/api/vector/sync")
+def vector_sync():
+    """后台启动全量向量同步。"""
+    try:
+        vector_service.start_background_sync()
+    except vector_service.VectorError as exc:
+        return fail(str(exc))
+    return ok({"status": "running"}, message="向量同步已开始，首次下载模型可能较慢")
+
+
+# 静态资源放在 /static 下，需在所有路由之后挂载
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -28,6 +28,8 @@ function initTabs() {
       } else if (target === "home") {
         loadStats();
         loadRecentNotes();
+      } else if (target === "qa") {
+        loadVectorStats();
       }
     });
   });
@@ -231,6 +233,8 @@ async function fillCategoryFilter() {
   } catch (_) { /* 分类加载失败不阻塞页面 */ }
 }
 
+let searchMode = "keyword";
+
 function currentFilters() {
   return {
     keyword: $("#notes-search").value.trim(),
@@ -239,24 +243,51 @@ function currentFilters() {
   };
 }
 
+function setSearchMode(mode) {
+  searchMode = mode;
+  $$(".segmented-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
+  const semantic = mode === "semantic";
+  $("#notes-tag-filter").disabled = semantic;
+  $("#notes-category-filter").disabled = semantic;
+}
+
 function bindNotesFilters() {
   $("#notes-tag-filter").addEventListener("change", loadNotes);
   $("#notes-category-filter").addEventListener("change", loadNotes);
+  $$(".segmented-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setSearchMode(btn.dataset.mode);
+      loadNotes();
+    });
+  });
 }
 
 /* ============ 笔记库：列表 ============ */
 async function loadNotes() {
   const listEl = $("#notes-list");
   const f = currentFilters();
-  const params = new URLSearchParams();
-  if (f.keyword) params.set("keyword", f.keyword);
-  if (f.tag) params.set("tag", f.tag);
-  if (f.category) params.set("category", f.category);
-  const query = params.toString() ? `?${params.toString()}` : "";
 
   try {
-    const res = await fetchJson(`/api/notes${query}`);
-    renderNotes(res.data.items || []);
+    let items = [];
+    if (searchMode === "semantic" && f.keyword) {
+      const res = await fetchJson("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: f.keyword }),
+      });
+      items = res.data.items || [];
+    } else {
+      const params = new URLSearchParams();
+      if (f.keyword) params.set("keyword", f.keyword);
+      if (f.tag) params.set("tag", f.tag);
+      if (f.category) params.set("category", f.category);
+      const query = params.toString() ? `?${params.toString()}` : "";
+      const res = await fetchJson(`/api/notes${query}`);
+      items = res.data.items || [];
+    }
+    renderNotes(items);
   } catch (err) {
     listEl.innerHTML = "";
     const card = document.createElement("div");
@@ -297,6 +328,12 @@ function buildNoteCard(note) {
       <span class="note-source">${escapeHtml(note.source || "手动输入")}</span>
       <span class="note-time">${formatTime(note.created_at)}</span>
     </div>`;
+  if (note.score !== undefined) {
+    const score = document.createElement("span");
+    score.className = "score-badge";
+    score.textContent = `相关度 ${Math.round(note.score * 100)}%`;
+    head.appendChild(score);
+  }
   card.appendChild(head);
 
   // 标签 chip（nth-child 由 CSS 轮换色调）
@@ -1169,6 +1206,129 @@ function bindSettings() {
   });
 }
 
+
+/* ============ v1.6：AI 问答和向量同步 ============ */
+let qaPollTimer = null;
+
+function stateText(status) {
+  return {
+    idle: "空闲",
+    running: "同步中",
+    done: "同步完成",
+    failed: "同步失败",
+  }[status] || status;
+}
+
+async function loadVectorStats() {
+  try {
+    const res = await fetchJson("/api/vector/stats");
+    const d = res.data || {};
+    $("#qa-vector-count").textContent = `向量笔记：${d.note_count ?? 0}`;
+    $("#qa-vector-state").textContent = `状态：${stateText(d.status || "idle")}`;
+    if (d.status === "running") startVectorPolling(false);
+    if (d.status === "done" || d.status === "failed") stopVectorPolling();
+  } catch (err) {
+    $("#qa-vector-state").textContent = `状态不可用：${err.message}`;
+  }
+}
+
+function startVectorPolling(showStartToast = true) {
+  if (showStartToast) toast("向量同步已开始，首次下载模型可能较慢", "info");
+  if (qaPollTimer) return;
+  qaPollTimer = setInterval(loadVectorStats, 1000);
+}
+
+function stopVectorPolling() {
+  if (!qaPollTimer) return;
+  clearInterval(qaPollTimer);
+  qaPollTimer = null;
+}
+
+async function syncVectorIndex() {
+  await fetchJson("/api/vector/sync", { method: "POST" });
+  startVectorPolling(true);
+  setTimeout(loadVectorStats, 500);
+}
+
+async function askQuestion() {
+  const question = $("#qa-question").value.trim();
+  const resultBox = $("#qa-result");
+  const btn = $("#btn-ask");
+  if (!question) {
+    toast("请输入问题", "warning");
+    return;
+  }
+
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = "正在搜索笔记并生成回答…";
+  resultBox.innerHTML = '<div class="qa-loading">⏳ 正在搜索笔记并生成回答…</div>';
+
+  try {
+    const res = await fetchJson("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    renderQaResult(res.data || {});
+  } catch (err) {
+    resultBox.innerHTML = `<div class="card glass empty">问答失败：${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+function renderQaResult(data) {
+  const box = $("#qa-result");
+  box.innerHTML = "";
+
+  const questionCard = document.createElement("div");
+  questionCard.className = "qa-question-bubble";
+  questionCard.textContent = $("#qa-question").value.trim();
+  box.appendChild(questionCard);
+
+  const answerCard = document.createElement("div");
+  answerCard.className = "card glass qa-answer-card";
+  const answerText = document.createElement("div");
+  answerText.className = "qa-answer-text";
+  answerText.textContent = data.answer || "";
+  answerCard.appendChild(answerText);
+  box.appendChild(answerCard);
+
+  if (data.sources && data.sources.length) {
+    const sourceCard = document.createElement("div");
+    sourceCard.className = "card glass qa-sources";
+    const title = document.createElement("div");
+    title.className = "qa-sources-title";
+    title.textContent = "引用来源";
+    sourceCard.appendChild(title);
+
+    const chips = document.createElement("div");
+    chips.className = "qa-source-list";
+    data.sources.forEach((source) => {
+      const chip = document.createElement("button");
+      chip.className = "qa-source-chip";
+      chip.type = "button";
+      chip.textContent = `${source.title} · ${Math.round(source.score * 100)}%`;
+      chip.addEventListener("click", () => goToNote(source.id));
+      chips.appendChild(chip);
+    });
+    sourceCard.appendChild(chips);
+    box.appendChild(sourceCard);
+  }
+}
+
+function bindQaPage() {
+  $("#btn-ask").addEventListener("click", askQuestion);
+  $("#btn-vector-sync").addEventListener("click", () => {
+    syncVectorIndex().catch((err) => toast(err.message || "同步启动失败", "error"));
+  });
+  $("#qa-question").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) askQuestion();
+  });
+}
+
 /* ============ 按钮波纹 ============ */
 function bindRipple() {
   $$(".btn").forEach((btn) => {
@@ -1196,10 +1356,12 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSettings();
   bindUploadModal();
   bindFeedPage();
+  bindQaPage();
   bindRipple();
   loadStats();
   loadRecentNotes();
   loadConfig();
   loadSchedulerConfig();
   loadSchedulerLogs();
+  loadVectorStats();
 });
