@@ -1,0 +1,13 @@
+fastapi==0.115.0
+uvicorn==0.30.0
+sqlalchemy==2.0.54
+openai==3.15.0
+keyring
+httpx
+beautifulsoup4
+feedparser
+python-multipart
+pdfplumber
+python-docx
+APScheduler>=3.10,<4
+chromadb
