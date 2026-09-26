@@ -588,6 +588,22 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">知识消化平台 v1.6.0</td>
+        <td class="time">2026-09-26 13:58</td>
+        <td>
+          <span class="tag">语义搜索</span><b>ChromaDB 向量库、语义搜索与单轮 RAG 问答</b>：
+          <ul>
+            <li>新增 <code>data/vectordb/</code> 本地 ChromaDB 持久化目录，collection 名称为 <code>notes</code>，余弦相似度索引；embedding 使用 ChromaDB 默认本地 <code>all-MiniLM-L6-v2</code>，不调用外部 embedding API。</li>
+            <li>新增 <code>services/vector_service.py</code>：提供单条新增、删除、更新、语义搜索、全量同步和统计能力；Chroma 的 cosine distance 转换为 0–1 的相关度。同步状态包含 idle、running、done、failed，并通过锁避免并发同步。</li>
+            <li>笔记创建、更新和删除后自动维护向量索引。向量写入或删除失败时不回滚笔记，接口返回中文警告，用户可稍后手动同步；RSS 预览保存后在同一事务完成笔记和队列状态，再建立向量索引。</li>
+            <li>新增 <code>POST /api/search</code>：按语义返回完整笔记和相关度分数；新增 <code>GET /api/vector/stats</code> 和 <code>POST /api/vector/sync</code>，支持后台同步和每秒轮询状态。</li>
+            <li>新增 <code>services/rag_service.py</code> 和 <code>POST /api/ask</code>：先取相关度前 5 条笔记，过滤失效 ID 和低于 0.20 的结果；无有效上下文时直接提示“笔记库中没有找到相关内容”，不调用 AI。</li>
+            <li>RAG 系统提示词限制 AI 只能依据给定笔记回答，信息不足必须说明，并使用来源编号引用。问答页显示问题气泡、回答卡片和可点击引用来源，点击来源可跳转笔记库并展开对应笔记。</li>
+            <li>本版只做单轮问答，不做多轮对话、RSS 搜索、订阅分组、文件上传历史、笔记编辑历史、批量操作或回收站；服务启动时如 SQLite 有笔记且向量库为空，只在后台同步，不阻塞 FastAPI。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
