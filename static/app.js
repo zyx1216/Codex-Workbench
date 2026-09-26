@@ -88,9 +88,10 @@ async function loadStats() {
   } catch (_) { /* 首页统计失败不打扰 */ }
 }
 
-/* ============ 链接弹窗 ============ */
-let pendingUrl = "";    // 本次处理的链接，重新生成时复用
-let previewData = null; // 预览数据，保存时提交
+/* ============ 链接 / 手动粘贴弹窗 ============ */
+let inputMode = "url";
+let lastProcessPayload = null; // 上次请求参数，重新生成时复用
+let previewData = null;        // 预览数据，保存时提交
 
 function showStage(name) {
   $$(".modal-stage").forEach((stage) => {
@@ -98,11 +99,27 @@ function showStage(name) {
   });
 }
 
+function setInputMode(mode, keepUrl = false) {
+  inputMode = mode === "text" ? "text" : "url";
+  $$(".modal-tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.inputMode === inputMode);
+  });
+  $("#input-mode-url").hidden = inputMode !== "url";
+  $("#input-mode-text").hidden = inputMode !== "text";
+  const oldUrl = keepUrl ? $("#link-url-input").value.trim() : "";
+  if (keepUrl && oldUrl) $("#manual-url-input").value = oldUrl;
+  $("#btn-process-url").textContent = inputMode === "url" ? "开始处理" : "开始改写";
+}
+
 function openLinkModal() {
-  pendingUrl = "";
+  lastProcessPayload = null;
   previewData = null;
   $("#link-url-input").value = "";
+  $("#manual-title-input").value = "";
+  $("#manual-content-input").value = "";
+  $("#manual-url-input").value = "";
   $("#link-modal-error").hidden = true;
+  setInputMode("url");
   showStage("input");
   $("#link-modal").hidden = false;
 }
@@ -111,33 +128,90 @@ function closeLinkModal() {
   $("#link-modal").hidden = true;
 }
 
-async function processUrl() {
-  const url = $("#link-url-input").value.trim();
+function buildProcessPayload() {
+  if (inputMode === "text") {
+    return {
+      mode: "text",
+      title: $("#manual-title-input").value.trim(),
+      content: $("#manual-content-input").value,
+      url: $("#manual-url-input").value.trim(),
+    };
+  }
+  return {
+    mode: "url",
+    url: $("#link-url-input").value.trim(),
+  };
+}
+
+async function postProcessInput(payload) {
+  // 这里不能用 fetchJson：失败信封的 data.stage 要用于判断是否提示切换手动模式
+  const res = await fetch("/api/process-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  let body = null;
+  try { body = await res.json(); } catch (_) { /* 非 JSON 按普通错误处理 */ }
+  if (!res.ok) {
+    throw new Error(body?.message || body?.detail || `请求失败（${res.status}）`);
+  }
+  return body || {code: 1, message: "服务返回格式异常", data: null};
+}
+
+async function processCurrent() {
+  const payload = buildProcessPayload();
   const errorBox = $("#link-modal-error");
   errorBox.hidden = true;
-  if (!url) {
+
+  if (payload.mode === "url" && !payload.url) {
     errorBox.textContent = "请输入网页链接";
     errorBox.hidden = false;
     return;
   }
-  pendingUrl = url;
+  if (payload.mode === "text" && !payload.content.trim()) {
+    errorBox.textContent = "请粘贴正文内容";
+    errorBox.hidden = false;
+    return;
+  }
+
+  lastProcessPayload = payload;
+  $("#process-loading-text").textContent = inputMode === "text"
+    ? "正在改写正文…"
+    : "正在抓取和改写…";
   showStage("loading");
+
   try {
-    const res = await fetchJson("/api/process-url", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    previewData = res.data;
+    const body = await postProcessInput(payload);
+    if (body.code !== 0) {
+      await handleProcessFailure(body, payload, errorBox);
+      return;
+    }
+    previewData = body.data;
     renderPreview(previewData);
     showStage("preview");
   } catch (err) {
-    // 失败回到输入阶段显示原因，可直接重试
-    $("#link-url-input").value = pendingUrl;
     errorBox.textContent = err.message || "处理失败，请重试";
     errorBox.hidden = false;
     showStage("input");
   }
+}
+
+async function handleProcessFailure(body, payload, errorBox) {
+  const message = body.message || "处理失败，请重试";
+  const stage = body.data?.stage || "";
+  // 只有链接抓取阶段失败，才提示切换到手动粘贴
+  if (payload.mode === "url" && stage === "crawl") {
+    const shouldSwitch = confirm("该网站无法自动抓取，是否切换到手动粘贴模式？");
+    if (shouldSwitch) {
+      setInputMode("text", true);
+      errorBox.hidden = true;
+      showStage("input");
+      return;
+    }
+  }
+  errorBox.textContent = message;
+  errorBox.hidden = false;
+  showStage("input");
 }
 
 function renderPreview(data) {
@@ -175,12 +249,17 @@ async function saveNote() {
 function bindLinkModal() {
   $('[data-action="add-link"]').addEventListener("click", openLinkModal);
   $("#link-modal-close").addEventListener("click", closeLinkModal);
-  $("#btn-process-url").addEventListener("click", processUrl);
+  $("#btn-process-url").addEventListener("click", processCurrent);
   $("#btn-save-note").addEventListener("click", saveNote);
-  // 重新生成：同一链接再跑一次
-  $("#btn-regenerate").addEventListener("click", processUrl);
+  // 重新生成：复用上次链接或手动粘贴内容
+  $("#btn-regenerate").addEventListener("click", () => {
+    if (lastProcessPayload) processCurrent();
+  });
+  $$(".modal-tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setInputMode(btn.dataset.inputMode));
+  });
   $("#link-url-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") processUrl();
+    if (e.key === "Enter") processCurrent();
   });
   // 点遮罩空白处关闭
   $("#link-modal").addEventListener("click", (e) => {
@@ -884,6 +963,7 @@ async function fetchAllRssSources() {
 async function loadPendingItems() {
   const box = $("#pending-list");
   box.innerHTML = "";
+  resetBatchToolbar();
   try {
     const res = await fetchJson("/api/pending");
     const items = res.data || [];
@@ -899,12 +979,16 @@ async function loadPendingItems() {
 
 function buildPendingCard(item) {
   const card = document.createElement("div");
-  card.className = "card glass feed-item-card";
+  card.className = "card glass feed-item-card pending-card";
+  card.dataset.itemId = item.id;
   if (item.status === "skipped") card.classList.add("is-disabled");
 
   const head = document.createElement("div");
   head.className = "feed-item-head";
   head.innerHTML = `
+    <label class="pending-check" title="选择后可批量处理">
+      <input type="checkbox" class="pending-item-check" />
+    </label>
     <div class="feed-item-main">
       <div class="feed-item-title">${escapeHtml(item.title || "无标题")}</div>
       <div class="feed-item-url">${escapeHtml(item.url)}</div>
@@ -912,6 +996,7 @@ function buildPendingCard(item) {
         <span>来源：${escapeHtml(item.source || "RSS")}</span>
         <span>${formatTime(item.created_at)}</span>
       </div>
+      <div class="pending-item-error" hidden></div>
     </div>`;
 
   const status = document.createElement("span");
@@ -931,6 +1016,8 @@ function buildPendingCard(item) {
   head.appendChild(actions);
   card.appendChild(head);
 
+  const checkbox = $(".pending-item-check", card);
+  checkbox.addEventListener("change", syncSelectAllState);
   processBtn.addEventListener("click", () => processPendingItem(item, processBtn));
 
   skipBtn.addEventListener("click", async () => {
@@ -1038,6 +1125,8 @@ async function reprocessPreview() {
 function bindFeedPage() {
   $("#btn-add-rss").addEventListener("click", addRssSource);
   $("#btn-fetch-all-rss").addEventListener("click", fetchAllRssSources);
+  $("#pending-select-all").addEventListener("change", toggleAllPendingChecks);
+  $("#btn-batch-process").addEventListener("click", batchProcessSelected);
   $("#pending-modal-close").addEventListener("click", () => {
     $("#pending-modal").hidden = true;
   });
@@ -1062,6 +1151,121 @@ function makeButton(className, text) {
   button.className = className;
   button.textContent = text;
   return button;
+}
+
+function resetBatchToolbar() {
+  $("#pending-select-all").checked = false;
+  $("#batch-progress").hidden = true;
+  $("#batch-progress-bar").style.width = "0";
+  $("#batch-progress-text").textContent = "准备中…";
+  $("#btn-batch-process").disabled = false;
+  $("#btn-batch-process").textContent = "批量处理";
+}
+
+function checkedPendingCards() {
+  return $$(".pending-item-check:checked").map((check) => check.closest(".pending-card"));
+}
+
+function syncSelectAllState() {
+  const all = $$(".pending-item-check");
+  const checked = checkedPendingCards();
+  $("#pending-select-all").checked = all.length > 0 && checked.length === all.length;
+}
+
+function toggleAllPendingChecks(event) {
+  $$(".pending-item-check").forEach((check) => {
+    check.checked = event.target.checked;
+  });
+}
+
+async function batchProcessSelected() {
+  const cards = checkedPendingCards();
+  if (!cards.length) {
+    toast("请先勾选要处理的内容", "warning");
+    return;
+  }
+  const itemIds = cards.map((card) => Number(card.dataset.itemId));
+  const btn = $("#btn-batch-process");
+  btn.disabled = true;
+  $("#batch-progress").hidden = false;
+  $("#batch-progress-bar").style.width = "0";
+
+  try {
+    await streamBatchProcess(itemIds);
+  } catch (err) {
+    toast(err.message || "批量处理失败", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "批量处理";
+  }
+}
+
+async function streamBatchProcess(itemIds) {
+  const res = await fetch("/api/pending/batch-process", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({item_ids: itemIds}),
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`批量处理请求失败（${res.status}）`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let summary = null;
+
+  while (true) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, {stream: true});
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const envelope = JSON.parse(line);
+      if (envelope.code !== 0) throw new Error(envelope.message || "批量处理失败");
+      const data = envelope.data || {};
+      if (data.type === "progress") updateBatchProgress(data);
+      if (data.type === "item") handleBatchItemResult(data);
+      if (data.type === "summary") summary = data;
+    }
+  }
+
+  await loadStats();
+  if (!summary) throw new Error("批量处理结果缺失");
+  toast(`批量处理完成：成功 ${summary.success} 条，失败 ${summary.failed} 条`,
+    summary.failed ? "warning" : "success");
+}
+
+function updateBatchProgress(data) {
+  const percent = Math.round((data.index / data.total) * 100);
+  $("#batch-progress-bar").style.width = `${percent}%`;
+  $("#batch-progress-text").textContent = `正在处理 ${data.index}/${data.total}…`;
+}
+
+function handleBatchItemResult(data) {
+  const card = $(`.pending-card[data-item-id="${data.item_id}"]`);
+  if (!card) return;
+  const check = $(".pending-item-check", card);
+  const errorBox = $(".pending-item-error", card);
+
+  if (data.status === "success") {
+    card.remove();
+    syncSelectAllState();
+    if (!$(".pending-card")) {
+      $("#pending-list").appendChild(
+        makeFeedEmpty("📭", "暂无待处理内容，去添加 RSS 源吧")
+      );
+    }
+    return;
+  }
+
+  check.checked = false;
+  errorBox.textContent = data.error || "处理失败";
+  errorBox.hidden = false;
+  syncSelectAllState();
 }
 
 function makeFeedEmpty(icon, text) {

@@ -5,6 +5,7 @@
 - fetch_url：httpx 抓取，浏览器 UA，15 秒超时，自动跟随跳转
 - extract_content：BeautifulSoup 提取标题和正文，去掉无关标签
 网络错误、非 2xx、超时等统一抛 CrawlError，由 API 层转成 code=1。
+- extract_from_text：处理用户手动粘贴的正文，不发起网络请求
 """
 
 from __future__ import annotations
@@ -115,6 +116,21 @@ def extract_content(html_bytes: bytes, url: str) -> dict[str, str]:
     return {"title": title, "content": body_text, "url": url}
 
 
+
+def extract_from_text(title: str, content: str, url: str) -> dict[str, str]:
+    """处理用户手动粘贴的标题、正文和来源链接；整个过程不请求网络。"""
+    title = (title or "").strip()
+    url = (url or "").strip()
+    body_text = _clean_text(content or "")
+    if not body_text:
+        raise CrawlError("请粘贴正文内容")
+
+    if len(body_text) > MAX_CONTENT_LENGTH:
+        body_text = body_text[:MAX_CONTENT_LENGTH].rstrip()
+        body_text += "\n\n内容过长已截断"
+
+    return {"title": title, "content": body_text, "url": url}
+
 def _extract_title(soup: BeautifulSoup) -> str:
     """标题优先 og:title，其次 title 标签，最后 h1。"""
     og_title = soup.find("meta", attrs={"property": "og:title"})
@@ -131,7 +147,8 @@ def _extract_title(soup: BeautifulSoup) -> str:
 def _clean_text(text: str) -> str:
     """整理正文空白：逐行去首尾空字符，压缩连续空行。"""
     lines = [line.strip() for line in text.splitlines()]
-    merged = "\n".join(line for line in lines if line)
+    # 空行保留为段落间隔，随后把 3 个以上换行压成 2 个
+    merged = "\n".join(lines)
     merged = _INLINE_SPACES.sub(" ", merged)
     merged = _BLANK_LINES.sub("\n\n", merged)
     return merged.strip()

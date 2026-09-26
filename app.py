@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v2.0 · FastAPI 主入口。
+知识消化平台 v2.1 · FastAPI 主入口。
 
 - 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
 - 提供链接处理、文件上传、RSS、笔记管理、语义搜索、RAG 问答和 Agent 自然语言操作接口
 - 所有 API 统一返回 {code, message, data}
 """
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -30,7 +31,7 @@ from services import (
     scheduler_service,
     vector_service,
 )
-from services.db import get_db, init_db
+from services.db import SessionLocal, get_db, init_db
 
 
 @asynccontextmanager
@@ -63,9 +64,12 @@ class AIConfig(BaseModel):
 
 
 class ProcessUrlRequest(BaseModel):
-    """链接处理请求体。"""
+    """链接或手动粘贴正文处理请求体。"""
 
-    url: str
+    mode: str = "url"
+    url: str = ""
+    title: str = ""
+    content: str = ""
 
 
 class NoteCreateRequest(BaseModel):
@@ -101,6 +105,12 @@ class ProcessedSaveRequest(BaseModel):
     title: str = ""
     content: str = ""
     tags: list[str] = []
+
+
+class BatchProcessRequest(BaseModel):
+    """待处理内容批量处理请求体。"""
+
+    item_ids: list[int] = []
 
 
 class SchedulerConfigRequest(BaseModel):
@@ -176,26 +186,59 @@ def post_ai_test():
     return ok(None, message=ai_service.test_connection())
 
 
-# ============ 链接处理 ============
+# ============ 链接 / 手动粘贴处理 ============
 @app.post("/api/process-url")
 def process_url(payload: ProcessUrlRequest):
-    """抓取网页正文并 AI 改写，返回预览数据（本端点不写库）。"""
+    """抓取网页或处理手动粘贴正文，AI 改写后返回预览数据（本端点不写库）。"""
+    mode = payload.mode if payload.mode in ("url", "text") else "url"
     try:
-        html_bytes, final_url = crawler_service.fetch_url(payload.url)
-        extracted = crawler_service.extract_content(html_bytes, final_url)
-        rewritten = ai_service.rewrite_to_plain(
-            extracted["title"], extracted["content"]
-        )
-        tags = ai_service.generate_tags(extracted["title"], extracted["content"])
-    except (crawler_service.CrawlError, ai_service.AiError) as exc:
-        return fail(str(exc))
+        if mode == "url":
+            return ok(_process_url_mode(payload))
+        return ok(_process_text_mode(payload))
+    except crawler_service.CrawlError as exc:
+        stage = "crawl" if mode == "url" else "text"
+        return fail(str(exc), {"stage": stage})
+    except ai_service.AiError as exc:
+        return fail(str(exc), {"stage": "ai"})
 
-    return ok({
+
+def _process_url_mode(payload: ProcessUrlRequest) -> dict[str, Any]:
+    """链接抓取模式。"""
+    html_bytes, final_url = crawler_service.fetch_url(payload.url)
+    extracted = crawler_service.extract_content(html_bytes, final_url)
+    rewritten = ai_service.rewrite_to_plain(
+        extracted["title"], extracted["content"]
+    )
+    tags = ai_service.generate_tags(extracted["title"], extracted["content"])
+    return {
         "title": extracted["title"],
         "content": rewritten,
         "tags": tags,
         "original_url": final_url,
-    })
+        "source": "手动输入",
+    }
+
+
+def _process_text_mode(payload: ProcessUrlRequest) -> dict[str, Any]:
+    """手动粘贴模式；不发起网络请求。"""
+    extracted = crawler_service.extract_from_text(
+        payload.title, payload.content, payload.url
+    )
+    title = extracted["title"]
+    if not title:
+        try:
+            title = ai_service.generate_title(extracted["content"]) or "无标题"
+        except ai_service.AiError:
+            title = "无标题"
+    rewritten = ai_service.rewrite_to_plain(title, extracted["content"])
+    tags = ai_service.generate_tags(title, extracted["content"])
+    return {
+        "title": title,
+        "content": rewritten,
+        "tags": tags,
+        "original_url": extracted["url"] or None,
+        "source": "手动粘贴",
+    }
 
 
 # ============ 文件上传解析 ============
@@ -451,6 +494,84 @@ def delete_pending(item_id: int, db: Session = Depends(get_db)):
     except rss_service.PendingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(None, message="待处理项已删除")
+
+
+# ============ 待处理内容批量处理 ============
+@app.post("/api/pending/batch-process")
+def batch_process_pending(payload: BatchProcessRequest):
+    """顺序处理并直接保存；通过 NDJSON 实时返回进度。"""
+    item_ids = list(dict.fromkeys(payload.item_ids))
+    if not item_ids:
+        return fail("请先选择待处理内容")
+    if len(item_ids) > 50:
+        return fail("单次最多批量处理 50 条")
+    return StreamingResponse(
+        _batch_process_events(item_ids),
+        media_type="application/x-ndjson",
+    )
+
+
+def _batch_process_events(item_ids: list[int]):
+    """生成批量处理流式事件。"""
+    total = len(item_ids)
+    results = []
+    success_count = failed_count = 0
+
+    for index, item_id in enumerate(item_ids, start=1):
+        progress = {
+            "type": "progress",
+            "index": index,
+            "total": total,
+            "item_id": item_id,
+        }
+        yield _ndjson_line(progress, message="progress")
+
+        try:
+            with SessionLocal() as db:
+                preview = rss_service.process_pending_item(db, item_id)
+                note = rss_service.save_processed_item(
+                    db,
+                    item_id,
+                    preview["title"],
+                    preview["content"],
+                    preview.get("tags", []),
+                )
+                note_id = note.id
+            result = {
+                "type": "item",
+                "index": index,
+                "item_id": item_id,
+                "status": "success",
+                "note_id": note_id,
+            }
+            success_count += 1
+        except Exception as exc:  # 单条失败不能中断批量任务
+            result = {
+                "type": "item",
+                "index": index,
+                "item_id": item_id,
+                "status": "failed",
+                "error": str(exc) or "处理失败",
+            }
+            failed_count += 1
+        results.append(result)
+        yield _ndjson_line(result, message="item")
+
+    summary = {
+        "type": "summary",
+        "success": success_count,
+        "failed": failed_count,
+        "results": results,
+    }
+    yield _ndjson_line(summary, message="success")
+
+
+def _ndjson_line(data: dict[str, Any], message: str) -> str:
+    """构造一条统一信封格式的 NDJSON 文本。"""
+    return json.dumps(
+        {"code": 0, "message": message, "data": data},
+        ensure_ascii=False,
+    ) + "\n"
 
 
 # ============ 定时自动抓取 ============

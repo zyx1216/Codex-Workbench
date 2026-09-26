@@ -99,6 +99,19 @@
       <div id="rss-source-list" class="feed-list"></div>
 
       <h2 class="section-title">待处理队列</h2>
+      <div class="card glass batch-toolbar">
+        <label class="check-field">
+          <input type="checkbox" id="pending-select-all" />
+          <span>全选</span>
+        </label>
+        <button class="btn btn-primary btn-sm" id="btn-batch-process" type="button">批量处理</button>
+        <div class="batch-progress" id="batch-progress" hidden>
+          <div class="progress-track">
+            <div class="progress-bar" id="batch-progress-bar"></div>
+          </div>
+          <div class="progress-text" id="batch-progress-text">准备中…</div>
+        </div>
+      </div>
       <div id="pending-list" class="feed-list"></div>
     </section>
 
@@ -210,10 +223,28 @@
 
       <!-- 输入阶段 -->
       <div class="modal-stage" id="modal-stage-input">
-        <h3 class="modal-title">🔗 输入网页链接</h3>
-        <p class="modal-desc">粘贴文章网址，自动抓取正文并改写成小白笔记。</p>
-        <input type="text" id="link-url-input" class="input"
-               placeholder="https://example.com/article" />
+        <h3 class="modal-title">🔗 生成小白笔记</h3>
+        <p class="modal-desc">可自动抓取网页，也可以手动粘贴抓不了的正文。</p>
+
+        <div class="modal-tabs" role="group" aria-label="输入模式">
+          <button type="button" class="modal-tab-btn active" data-input-mode="url">链接抓取</button>
+          <button type="button" class="modal-tab-btn" data-input-mode="text">手动粘贴</button>
+        </div>
+
+        <div class="input-mode" id="input-mode-url">
+          <input type="text" id="link-url-input" class="input"
+                 placeholder="https://example.com/article" />
+        </div>
+
+        <div class="input-mode" id="input-mode-text" hidden>
+          <input type="text" id="manual-title-input" class="input"
+                 placeholder="标题（可选，不填则 AI 生成）" />
+          <textarea id="manual-content-input" class="input textarea manual-textarea"
+                    placeholder="粘贴文章正文..."></textarea>
+          <input type="text" id="manual-url-input" class="input"
+                 placeholder="来源链接（可选，仅作记录）" />
+        </div>
+
         <div class="modal-error" id="link-modal-error" hidden></div>
         <div class="btn-row">
           <button class="btn btn-primary" id="btn-process-url">开始处理</button>
@@ -223,7 +254,7 @@
       <!-- 处理中阶段 -->
       <div class="modal-stage" id="modal-stage-loading" hidden>
         <div class="spinner" aria-hidden="true"></div>
-        <p class="loading-text">正在抓取和改写…</p>
+        <p class="loading-text" id="process-loading-text">正在抓取和改写…</p>
         <p class="hint">抓取网页加 AI 改写大约需要十几秒，请稍候</p>
       </div>
 

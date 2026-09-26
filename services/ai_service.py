@@ -6,6 +6,7 @@ AI 配置与调用封装（v1.1 完善真实调用）。
 - chat：调用 OpenAI 兼容接口，30 秒超时，重试 1 次
 - rewrite_to_plain：改写成通俗小白笔记
 - generate_tags：生成标签，失败降级空列表
+- generate_title：根据手动粘贴正文生成标题
 """
 
 from __future__ import annotations
@@ -42,6 +43,13 @@ TAGS_PROMPT = (
     "请根据下面文章的标题和正文，生成3-5个概括主题的标签。"
     "只输出标签本身，用英文逗号分隔，不要编号、不要解释、不要加“标签：”等前缀。\n\n"
     "标题：{title}\n\n正文：{content}"
+)
+
+
+# 根据正文生成标题：限制长度，方便手动粘贴时自动补标题
+TITLE_PROMPT = (
+    "请根据下面正文生成一个中文标题，不超过20个字，"
+    "只输出标题，不要解释、不要标点结尾。\n\n正文：{content}"
 )
 
 
@@ -185,3 +193,10 @@ def generate_tags(title: str, content: str) -> list[str]:
     tags = parse_tags(raw)
     # 只保留前 5 个，防止模型不听话输出一大串
     return tags[:5]
+
+
+def generate_title(content: str) -> str:
+    """根据手动粘贴正文生成标题；失败抛 AiError。"""
+    short_content = (content or "")[:3000]
+    title = chat(TITLE_PROMPT.format(content=short_content))
+    return title.strip()[:20]

@@ -1145,3 +1145,178 @@ select.input {
     width: 100%;
   }
 }
+/* ============================================================
+   v2.1 新增样式：手动粘贴、批量处理
+   ============================================================ */
+
+/* 弹窗顶部模式切换 */
+.modal-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.modal-tab-btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.modal-tab-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.modal-tab-btn.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.28);
+}
+
+/* 手动粘贴区域：多个输入框纵向排列 */
+#input-mode-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#input-mode-text[hidden] { display: none; }
+
+.manual-textarea {
+  width: 100%;
+  min-height: 220px;
+  color-scheme: dark;
+}
+
+/* 批量操作工具栏 */
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px 18px;
+}
+
+.check-field,
+.pending-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.check-field input,
+.pending-check input {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+#btn-batch-process {
+  flex-shrink: 0;
+}
+
+.batch-progress {
+  min-width: 180px;
+  flex: 1 1 220px;
+}
+
+.batch-progress .progress-track {
+  margin: 0 0 5px;
+}
+
+.batch-progress .progress-text {
+  text-align: left;
+}
+
+/* 队列卡片：复选框、正文和按钮分区，避免挤压 */
+.pending-card .feed-item-head {
+  align-items: flex-start;
+}
+
+.pending-check {
+  padding-top: 3px;
+}
+
+.pending-item-error {
+  margin-top: 9px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.11);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
+.pending-item-error[hidden] { display: none; }
+
+/* 窄屏：工具栏换行，弹窗和队列不横向溢出 */
+@media (max-width: 640px) {
+  .modal-tabs {
+    grid-template-columns: 1fr;
+    border-radius: 14px;
+  }
+
+  .modal-tab-btn {
+    border-radius: 10px;
+  }
+
+  .manual-textarea {
+    min-height: 190px;
+  }
+
+  .batch-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .check-field {
+    width: 100%;
+  }
+
+  #btn-batch-process {
+    width: 100%;
+  }
+
+  .batch-progress {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .batch-progress .progress-text {
+    text-align: center;
+  }
+
+  .pending-card {
+    padding: 15px 14px;
+  }
+
+  .pending-card .feed-item-actions {
+    gap: 7px;
+  }
+
+  .pending-card .feed-item-actions .btn,
+  .pending-card .feed-item-actions .status-badge {
+    flex: 1 1 calc(50% - 8px);
+    text-align: center;
+  }
+}
