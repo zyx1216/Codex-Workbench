@@ -4,6 +4,7 @@
    - 链接弹窗：输入 → 处理中 → 预览 → 保存
    - 笔记库：列表、搜索、标签/分类筛选、展开、编辑、删除
    - 文件上传：拖拽/选择、进度、预览、保存
+   - RSS 订阅：源管理、待处理队列、预览后保存
    - 首页：真实统计数字 + 最近笔记
    ============================================================ */
 
@@ -21,6 +22,9 @@ function initTabs() {
       if (target === "notes") {
         initNotesFilters();
         loadNotes();
+      } else if (target === "feed") {
+        loadRssSources();
+        loadPendingItems();
       } else if (target === "home") {
         loadStats();
         loadRecentNotes();
@@ -725,6 +729,312 @@ function bindUploadModal() {
 }
 
 
+/* ============ v1.4：RSS 订阅 ============ */
+let processedPreview = null;
+
+async function addRssSource() {
+  const nameBox = $("#rss-name");
+  const urlBox = $("#rss-url");
+  const name = nameBox.value.trim();
+  const url = urlBox.value.trim();
+  try {
+    await fetchJson("/api/rss-sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, url }),
+    });
+    nameBox.value = "";
+    urlBox.value = "";
+    toast("RSS 源已添加", "success");
+    await loadRssSources();
+  } catch (err) {
+    toast(err.message || "添加失败", "error");
+  }
+}
+
+async function loadRssSources() {
+  const box = $("#rss-source-list");
+  box.innerHTML = "";
+  try {
+    const res = await fetchJson("/api/rss-sources");
+    const sources = res.data || [];
+    if (!sources.length) {
+      box.appendChild(makeFeedEmpty("📡", "暂无 RSS 源，先添加一个订阅地址"));
+      return;
+    }
+    sources.forEach((source) => box.appendChild(buildSourceCard(source)));
+  } catch (err) {
+    box.appendChild(makeFeedEmpty("⚠️", `RSS 源加载失败：${err.message}`));
+  }
+}
+
+function buildSourceCard(source) {
+  const card = document.createElement("div");
+  card.className = "card glass feed-item-card";
+
+  const head = document.createElement("div");
+  head.className = "feed-item-head";
+  head.innerHTML = `
+    <div class="feed-item-main">
+      <div class="feed-item-title">${escapeHtml(source.name)}</div>
+      <div class="feed-item-url">${escapeHtml(source.url)}</div>
+      <div class="feed-item-meta">
+        <span>最后抓取：${source.last_fetched ? formatTime(source.last_fetched) : "尚未抓取"}</span>
+      </div>
+    </div>`;
+
+  const actions = document.createElement("div");
+  actions.className = "feed-item-actions";
+  const fetchBtn = makeButton("btn btn-ghost btn-sm", "抓取");
+  const deleteBtn = makeButton("btn btn-danger btn-sm", "删除");
+  actions.append(fetchBtn, deleteBtn);
+  head.appendChild(actions);
+  card.appendChild(head);
+
+  fetchBtn.addEventListener("click", async () => {
+    fetchBtn.disabled = true;
+    const oldText = fetchBtn.textContent;
+    fetchBtn.textContent = "抓取中…";
+    try {
+      const res = await fetchJson(`/api/rss-sources/${source.id}/fetch`, { method: "POST" });
+      toast(res.message, "success");
+      await Promise.all([loadRssSources(), loadPendingItems(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "抓取失败", "error");
+      fetchBtn.disabled = false;
+      fetchBtn.textContent = oldText;
+    }
+  });
+
+  deleteBtn.addEventListener("click", async () => {
+    if (!confirm(`确定删除 RSS 源「${source.name}」吗？已进入队列的内容会保留。`)) return;
+    try {
+      await fetchJson(`/api/rss-sources/${source.id}`, { method: "DELETE" });
+      toast("RSS 源已删除", "success");
+      await loadRssSources();
+    } catch (err) {
+      toast(err.message || "删除失败", "error");
+    }
+  });
+
+  return card;
+}
+
+async function fetchAllRssSources() {
+  const btn = $("#btn-fetch-all-rss");
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = "全部抓取中…";
+  try {
+    const res = await fetchJson("/api/rss/fetch-all", { method: "POST" });
+    const results = res.data || [];
+    const totalAdded = results.reduce((sum, item) => sum + (item.added || 0), 0);
+    const failed = results.filter((item) => item.error);
+    if (failed.length) {
+      toast(`抓取完成：新增 ${totalAdded} 条，${failed.length} 个源失败`, "warning");
+    } else {
+      toast(`全部抓取完成，新增 ${totalAdded} 条`, "success");
+    }
+    await Promise.all([loadRssSources(), loadPendingItems(), loadStats()]);
+  } catch (err) {
+    toast(err.message || "全部抓取失败", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function loadPendingItems() {
+  const box = $("#pending-list");
+  box.innerHTML = "";
+  try {
+    const res = await fetchJson("/api/pending");
+    const items = res.data || [];
+    if (!items.length) {
+      box.appendChild(makeFeedEmpty("📭", "暂无待处理内容，去添加 RSS 源吧"));
+      return;
+    }
+    items.forEach((item) => box.appendChild(buildPendingCard(item)));
+  } catch (err) {
+    box.appendChild(makeFeedEmpty("⚠️", `待处理队列加载失败：${err.message}`));
+  }
+}
+
+function buildPendingCard(item) {
+  const card = document.createElement("div");
+  card.className = "card glass feed-item-card";
+  if (item.status === "skipped") card.classList.add("is-disabled");
+
+  const head = document.createElement("div");
+  head.className = "feed-item-head";
+  head.innerHTML = `
+    <div class="feed-item-main">
+      <div class="feed-item-title">${escapeHtml(item.title || "无标题")}</div>
+      <div class="feed-item-url">${escapeHtml(item.url)}</div>
+      <div class="feed-item-meta">
+        <span>来源：${escapeHtml(item.source || "RSS")}</span>
+        <span>${formatTime(item.created_at)}</span>
+      </div>
+    </div>`;
+
+  const status = document.createElement("span");
+  status.className = `status-badge ${item.status === "skipped" ? "skipped" : ""}`;
+  status.textContent = item.status === "skipped" ? "已跳过" : "待处理";
+
+  const actions = document.createElement("div");
+  actions.className = "feed-item-actions";
+  const processBtn = makeButton(
+    "btn btn-primary btn-sm",
+    item.status === "skipped" ? "重新处理" : "处理"
+  );
+  const skipBtn = makeButton("btn btn-ghost btn-sm", "跳过");
+  const deleteBtn = makeButton("btn btn-danger btn-sm", "删除");
+  if (item.status === "skipped") skipBtn.disabled = true;
+  actions.append(status, processBtn, skipBtn, deleteBtn);
+  head.appendChild(actions);
+  card.appendChild(head);
+
+  processBtn.addEventListener("click", () => processPendingItem(item, processBtn));
+
+  skipBtn.addEventListener("click", async () => {
+    try {
+      await fetchJson(`/api/pending/${item.id}/skip`, { method: "POST" });
+      toast("已跳过", "success");
+      await Promise.all([loadPendingItems(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "跳过失败", "error");
+    }
+  });
+
+  deleteBtn.addEventListener("click", async () => {
+    if (!confirm("确定删除这条待处理内容吗？删除后无法恢复。")) return;
+    try {
+      await fetchJson(`/api/pending/${item.id}`, { method: "DELETE" });
+      toast("待处理项已删除", "success");
+      await Promise.all([loadPendingItems(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "删除失败", "error");
+    }
+  });
+
+  return card;
+}
+
+async function processPendingItem(item, button) {
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = "处理中…";
+  try {
+    const res = await fetchJson(`/api/pending/${item.id}/process`, { method: "POST" });
+    processedPreview = res.data;
+    renderProcessedPreview(processedPreview);
+    $("#pending-modal").hidden = false;
+  } catch (err) {
+    toast(err.message || "处理失败", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = oldText;
+  }
+}
+
+function renderProcessedPreview(data) {
+  $("#pending-modal-error").hidden = true;
+  $("#pending-preview-title").textContent = data.title || "无标题";
+  const tagBox = $("#pending-preview-tags");
+  tagBox.innerHTML = "";
+  (data.tags || []).forEach((tag) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = tag;
+    tagBox.appendChild(chip);
+  });
+  $("#pending-preview-content").textContent = data.content || "";
+}
+
+async function saveProcessedPreview() {
+  if (!processedPreview) return;
+  const btn = $("#btn-save-pending");
+  btn.disabled = true;
+  try {
+    await fetchJson(`/api/pending/${processedPreview.item_id}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: processedPreview.title,
+        content: processedPreview.content,
+        tags: processedPreview.tags,
+      }),
+    });
+    toast("已保存到笔记库", "success");
+    $("#pending-modal").hidden = true;
+    await Promise.all([loadPendingItems(), loadStats()]);
+  } catch (err) {
+    const errorBox = $("#pending-modal-error");
+    errorBox.textContent = err.message || "保存失败";
+    errorBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function reprocessPreview() {
+  if (!processedPreview) return;
+  const btn = $("#btn-reprocess-pending");
+  btn.disabled = true;
+  btn.textContent = "重新生成中…";
+  try {
+    const res = await fetchJson(`/api/pending/${processedPreview.item_id}/process`, {
+      method: "POST",
+    });
+    processedPreview = res.data;
+    renderProcessedPreview(processedPreview);
+  } catch (err) {
+    const errorBox = $("#pending-modal-error");
+    errorBox.textContent = err.message || "重新生成失败";
+    errorBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔄 重新生成";
+  }
+}
+
+function bindFeedPage() {
+  $("#btn-add-rss").addEventListener("click", addRssSource);
+  $("#btn-fetch-all-rss").addEventListener("click", fetchAllRssSources);
+  $("#pending-modal-close").addEventListener("click", () => {
+    $("#pending-modal").hidden = true;
+  });
+  $("#btn-cancel-pending").addEventListener("click", () => {
+    $("#pending-modal").hidden = true;
+  });
+  $("#btn-save-pending").addEventListener("click", saveProcessedPreview);
+  $("#btn-reprocess-pending").addEventListener("click", reprocessPreview);
+  $("#pending-modal").addEventListener("click", (event) => {
+    if (event.target === $("#pending-modal")) {
+      $("#pending-modal").hidden = true;
+    }
+  });
+
+  $("#rss-url").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addRssSource();
+  });
+}
+
+function makeButton(className, text) {
+  const button = document.createElement("button");
+  button.className = className;
+  button.textContent = text;
+  return button;
+}
+
+function makeFeedEmpty(icon, text) {
+  const empty = document.createElement("div");
+  empty.className = "card glass empty";
+  empty.innerHTML = `<div class="empty-icon">${icon}</div><p>${escapeHtml(text)}</p>`;
+  return empty;
+}
+
+
 /* ============ 设置页：配置读写 ============ */
 async function loadConfig() {
   try {
@@ -793,6 +1103,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindEditModal();
   bindSettings();
   bindUploadModal();
+  bindFeedPage();
   bindRipple();
   loadStats();
   loadRecentNotes();

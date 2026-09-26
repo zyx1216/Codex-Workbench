@@ -62,8 +62,9 @@ def create_note(
     tags: list[str] | None = None,
     source: str = "手动输入",
     category: str = "默认",
+    commit: bool = True,
 ) -> Note:
-    """新建笔记并写入数据库。标题为空时用“无标题”。"""
+    """新建笔记。commit=False 时由调用方和其他改动一起提交。"""
     now = datetime.now()
     note = Note(
         title=(title or "").strip() or "无标题",
@@ -76,6 +77,8 @@ def create_note(
         updated_at=now,
     )
     session.add(note)
+    if not commit:
+        return note
     session.commit()
     session.refresh(note)
     return note

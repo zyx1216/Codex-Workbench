@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v1.3 · FastAPI 主入口。
+知识消化平台 v1.4 · FastAPI 主入口。
 
 - 启动时初始化数据目录和 SQLite 表
 - 挂载 /static 提供前端资源
@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config
-from services import ai_service, crawler_service, file_service, note_service
+from services import ai_service, crawler_service, file_service, note_service, rss_service
 from services.db import get_db, init_db
 
 # 启动时确保表就绪（幂等）
@@ -63,6 +63,21 @@ class NoteUpdateRequest(BaseModel):
     content: str = ""
     tags: list[str] = []
     category: str = "默认"
+
+
+class RssSourceRequest(BaseModel):
+    """RSS 源添加请求体。"""
+
+    name: str = ""
+    url: str = ""
+
+
+class ProcessedSaveRequest(BaseModel):
+    """待处理内容预览保存请求体。"""
+
+    title: str = ""
+    content: str = ""
+    tags: list[str] = []
 
 
 def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
@@ -264,6 +279,113 @@ def update_note(note_id: int, payload: NoteUpdateRequest, db: Session = Depends(
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(note_service.serialize_note(note), message="笔记已更新")
+
+
+
+# ============ v1.4：RSS 订阅与待处理队列 ============
+@app.get("/api/rss-sources")
+def get_rss_sources(db: Session = Depends(get_db)):
+    """返回全部 RSS 源。"""
+    sources = rss_service.list_sources(db)
+    return ok([rss_service.serialize_source(source) for source in sources])
+
+
+@app.post("/api/rss-sources")
+def post_rss_source(payload: RssSourceRequest, db: Session = Depends(get_db)):
+    """验证并添加 RSS 源。"""
+    try:
+        source = rss_service.add_source(db, payload.name, payload.url)
+    except rss_service.RssError as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok(rss_service.serialize_source(source), message="RSS 源已添加")
+
+
+@app.delete("/api/rss-sources/{source_id}")
+def delete_rss_source(source_id: int, db: Session = Depends(get_db)):
+    """删除 RSS 源。"""
+    try:
+        rss_service.delete_source(db, source_id)
+    except rss_service.RssSourceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(None, message="RSS 源已删除")
+
+
+@app.post("/api/rss-sources/{source_id}/fetch")
+def fetch_rss_source(source_id: int, db: Session = Depends(get_db)):
+    """手动抓取单个 RSS 源。"""
+    try:
+        added = rss_service.fetch_source(db, source_id)
+    except rss_service.RssSourceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except rss_service.RssError as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok({"added": added}, message=f"抓取完成，新增 {added} 条")
+
+
+@app.post("/api/rss/fetch-all")
+def fetch_all_rss(db: Session = Depends(get_db)):
+    """抓取全部 RSS 源。"""
+    return ok(rss_service.fetch_all_sources(db), message="全部源抓取完成")
+
+
+@app.get("/api/pending")
+def get_pending(db: Session = Depends(get_db)):
+    """返回待处理和已跳过队列。"""
+    items = rss_service.list_pending(db)
+    return ok([rss_service.serialize_pending(item) for item in items])
+
+
+@app.post("/api/pending/{item_id}/process")
+def process_pending(item_id: int, db: Session = Depends(get_db)):
+    """抓取正文并 AI 改写，返回预览但不保存。"""
+    try:
+        preview = rss_service.process_pending_item(db, item_id)
+    except rss_service.PendingNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (
+        rss_service.RssError,
+        crawler_service.CrawlError,
+        ai_service.AiError,
+    ) as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok(preview, message="改写完成，请确认后保存")
+
+
+@app.post("/api/pending/{item_id}/save")
+def save_pending(item_id: int, payload: ProcessedSaveRequest, db: Session = Depends(get_db)):
+    """保存预览笔记并标记队列项完成。"""
+    try:
+        note = rss_service.save_processed_item(
+            db, item_id, payload.title, payload.content, payload.tags
+        )
+    except rss_service.PendingNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except rss_service.RssError as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok(note_service.serialize_note(note), message="笔记已保存")
+
+
+@app.post("/api/pending/{item_id}/skip")
+def skip_pending(item_id: int, db: Session = Depends(get_db)):
+    """跳过待处理项。"""
+    try:
+        rss_service.skip_pending_item(db, item_id)
+    except rss_service.PendingNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except rss_service.RssError as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok(None, message="已跳过")
+
+
+@app.delete("/api/pending/{item_id}")
+def delete_pending(item_id: int, db: Session = Depends(get_db)):
+    """删除待处理项。"""
+    try:
+        rss_service.delete_pending_item(db, item_id)
+    except rss_service.PendingNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(None, message="待处理项已删除")
+
 
 
 # 静态资源（CSS / JS）放在 /static 下，需在所有路由之后挂载
