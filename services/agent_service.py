@@ -2,8 +2,8 @@
 """
 Agent 编排服务。
 
-- 主路径：使用 OpenAI 兼容接口的 tools 参数完成 Function Calling
-- 降级路径：模型明确不支持 tools 时，用提示词解析单个工具调用
+- 主路径：LangChain @tool + create_tool_calling_agent + AgentExecutor
+- 降级路径：模型明确不支持工具调用时，用提示词解析单个工具调用
 - Agent 不提供删除工具，避免绕过页面确认
 """
 
@@ -12,11 +12,17 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+
+from models.models import RssSource
 from services import (
     ai_service,
     note_service,
@@ -24,7 +30,6 @@ from services import (
     rss_service,
     vector_service,
 )
-from models.models import RssSource
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +60,13 @@ class AgentError(Exception):
     """Agent 编排失败，信息可直接展示。"""
 
 
-# ============ 工具定义 ============
+# ============ 对外工具定义 ============
 def _string_property(description: str) -> dict[str, str]:
     return {"type": "string", "description": description}
 
 
 def list_tools() -> list[dict[str, Any]]:
-    """返回 OpenAI Function Calling 工具定义。"""
+    """返回 OpenAI 标准工具定义，保持 /api/agent/tools 输出不变。"""
     return [
         {
             "type": "function",
@@ -201,9 +206,9 @@ def list_tools() -> list[dict[str, Any]]:
     ]
 
 
-# ============ 模型调用 ============
-def _client() -> Any:
-    """创建 OpenAI 兼容客户端；配置缺失时抛 AiError。"""
+# ============ 模型配置 ============
+def _model_settings() -> tuple[str, str, str]:
+    """读取 OpenAI 兼容模型配置。"""
     settings = ai_service.get_config()
     base_url = settings.get("base_url", "").strip()
     model = settings.get("model", "").strip()
@@ -214,41 +219,22 @@ def _client() -> Any:
         raise ai_service.AiError("请先在设置页填写模型名称并保存")
     if not api_key:
         raise ai_service.AiError("请先在设置页填写 API Key 并保存")
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise AgentError("当前环境缺少 openai 库") from exc
-    return OpenAI(
-        base_url=base_url,
+    return base_url, model, api_key
+
+
+def _chat_model() -> ChatOpenAI:
+    """创建 LangChain OpenAI 兼容聊天模型。"""
+    base_url, model, api_key = _model_settings()
+    return ChatOpenAI(
+        model=model,
         api_key=api_key,
+        base_url=base_url,
         timeout=30,
         max_retries=1,
-    ), model
+    )
 
 
-def _create_completion(messages: list[dict[str, Any]], use_tools: bool) -> Any:
-    """调用聊天模型。"""
-    client, model = _client()
-    kwargs: dict[str, Any] = {"model": model, "messages": messages}
-    if use_tools:
-        kwargs["tools"] = list_tools()
-        kwargs["tool_choice"] = "auto"
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as exc:  # noqa: BLE001 - SDK 异常类型不统一
-        message = str(exc)
-        logger.warning("Agent 模型调用失败：%s", message)
-        # 统一封装成 AiError；错误文案保留，由主流程判断是否降级
-        raise ai_service.AiError(f"AI 调用失败：{message}") from exc
-
-
-def _unsupported_tools(message: str) -> bool:
-    """判断错误是否明确表示不支持 Function Calling。"""
-    lower = message.lower()
-    return any(text in lower for text in ("tools", "tool_calls", "function calling", "function_calling"))
-
-
-# ============ 工具执行 ============
+# ============ 工具业务实现 ============
 def _safe_tags(value: Any) -> list[str]:
     """兼容数组、逗号字符串和空值。"""
     if isinstance(value, list):
@@ -274,7 +260,7 @@ def _compact_note(note: Any, score: float | None = None) -> dict[str, Any]:
     return data
 
 
-def _tool_search_notes(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_search_notes(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """语义搜索优先，失败或无结果时降级关键词搜索。"""
     query = str(arguments.get("query") or "").strip()
     if not query:
@@ -287,7 +273,6 @@ def _tool_search_notes(session: Session, arguments: dict[str, Any]) -> dict[str,
             try:
                 note = note_service.get_note_by_id(session, hit["id"])
             except note_service.NoteNotFound:
-                # 向量里残留的失效 ID 跳过；全部失效时降级关键词搜索
                 continue
             items.append(_compact_note(note, hit["score"]))
         if items:
@@ -303,7 +288,7 @@ def _tool_search_notes(session: Session, arguments: dict[str, Any]) -> dict[str,
     }
 
 
-def _tool_create_note(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_create_note(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """创建笔记。"""
     title = str(arguments.get("title") or "").strip()
     if not title:
@@ -317,7 +302,7 @@ def _tool_create_note(session: Session, arguments: dict[str, Any]) -> dict[str, 
     return _compact_note(note)
 
 
-def _tool_add_rss(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_add_rss(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """添加 RSS 源。"""
     source = rss_service.add_source(
         session,
@@ -327,21 +312,24 @@ def _tool_add_rss(session: Session, arguments: dict[str, Any]) -> dict[str, Any]
     return rss_service.serialize_source(source)
 
 
-def _tool_fetch_rss(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_fetch_rss(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """抓取单源或全部 RSS。"""
     raw_source_id = str(arguments.get("source_id") or "").strip().lower()
     if not raw_source_id:
         raise AgentError("缺少 RSS 源 ID；抓取全部时传 all")
     if raw_source_id == "all":
         results = rss_service.fetch_all_sources(session, log_summary=False)
-        return {"results": results, "total_added": sum(int(item.get("added", 0)) for item in results)}
+        return {
+            "results": results,
+            "total_added": sum(int(item.get("added", 0)) for item in results),
+        }
     if not raw_source_id.isdigit():
         raise AgentError("RSS 源 ID 必须是数字，或传 all")
     added = rss_service.fetch_source(session, int(raw_source_id))
     return {"added": added}
 
 
-def _tool_get_stats(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_get_stats(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """读取综合统计。"""
     stats = note_service.get_stats(session)
     stats["rss_source_count"] = int(session.scalar(
@@ -350,13 +338,13 @@ def _tool_get_stats(session: Session, arguments: dict[str, Any]) -> dict[str, An
     return stats
 
 
-def _tool_get_pending(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_get_pending(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """读取待处理和已跳过队列。"""
     items = rss_service.list_pending(session)
     return {"items": [rss_service.serialize_pending(item) for item in items]}
 
 
-def _tool_process_pending(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_process_pending(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """处理待处理内容，但只返回预览。"""
     item_id = arguments.get("item_id")
     if not isinstance(item_id, int):
@@ -364,7 +352,7 @@ def _tool_process_pending(session: Session, arguments: dict[str, Any]) -> dict[s
     return rss_service.process_pending_item(session, item_id)
 
 
-def _tool_save_pending(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_save_pending(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """用户确认后保存待处理预览。"""
     item_id = arguments.get("item_id")
     if not isinstance(item_id, int):
@@ -379,7 +367,7 @@ def _tool_save_pending(session: Session, arguments: dict[str, Any]) -> dict[str,
     return _compact_note(note)
 
 
-def _tool_answer_question(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_answer_question(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     """基于笔记库进行 RAG 问答。"""
     question = str(arguments.get("question") or "").strip()
     if not question:
@@ -387,30 +375,53 @@ def _tool_answer_question(session: Session, arguments: dict[str, Any]) -> dict[s
     return rag_service.answer_question(question, session)
 
 
-_TOOL_FUNCTIONS = {
-    "search_notes": _tool_search_notes,
-    "create_note": _tool_create_note,
-    "add_rss_source": _tool_add_rss,
-    "fetch_rss": _tool_fetch_rss,
-    "get_stats": _tool_get_stats,
-    "get_pending": _tool_get_pending,
-    "process_pending": _tool_process_pending,
-    "save_pending_item": _tool_save_pending,
-    "answer_question": _tool_answer_question,
+_TOOL_RUNNERS = {
+    "search_notes": _run_search_notes,
+    "create_note": _run_create_note,
+    "add_rss_source": _run_add_rss,
+    "fetch_rss": _run_fetch_rss,
+    "get_stats": _run_get_stats,
+    "get_pending": _run_get_pending,
+    "process_pending": _run_process_pending,
+    "save_pending_item": _run_save_pending,
+    "answer_question": _run_answer_question,
 }
 
 
-def execute_tool(session: Session, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """执行工具；异常转换成错误结果，不打断 Agent 主流程。"""
-    function = _TOOL_FUNCTIONS.get(name)
-    if function is None:
-        return {"ok": False, "error": f"未知工具：{name}", "summary": "工具不存在"}
+def execute_tool(
+    session: Session,
+    name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """执行单个工具；所有异常都转成工具结果，供降级流程和回调使用。"""
+    runner = _TOOL_RUNNERS.get(name)
+    if runner is None:
+        error = f"未知工具：{name}"
+        return {"ok": False, "error": error, "summary": "工具不存在"}
+
     try:
-        data = function(session, arguments if isinstance(arguments, dict) else {})
-        return {"ok": True, "data": data, "summary": summarize_result(name, data)}
-    except Exception as exc:  # noqa: BLE001 - 所有工具错误都要返回给模型
+        data = runner(session, arguments if isinstance(arguments, dict) else {})
+    except Exception as exc:  # noqa: BLE001 - 工具错误必须返回给模型
         logger.warning("工具 %s 执行失败：%s", name, exc)
-        return {"ok": False, "error": str(exc), "summary": summarize_error(name, str(exc))}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "summary": summarize_error(name, str(exc)),
+        }
+    return {
+        "ok": True,
+        "data": data,
+        "summary": summarize_result(name, data),
+    }
+
+
+def _tool_result_json(session: Session, name: str, arguments: dict[str, Any]) -> str:
+    """LangChain 工具统一返回 JSON 字符串。"""
+    return json.dumps(
+        execute_tool(session, name, arguments),
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 def summarize_result(name: str, data: Any) -> str:
@@ -450,6 +461,140 @@ def summarize_error(name: str, error: str) -> str:
     return f"{name} 失败：{error}"
 
 
+# ============ LangChain 工具 ============
+def _build_tools(session: Session) -> list[Any]:
+    """创建绑定当前数据库会话的 LangChain 工具。"""
+
+    @tool
+    def search_notes(query: str) -> str:
+        """搜索笔记库。用户要找笔记、资料、文章或主题内容时使用。
+
+        Args:
+            query: 搜索关键词或要查找的主题。
+        """
+        return _tool_result_json(session, "search_notes", {"query": query})
+
+    @tool
+    def create_note(
+        title: str,
+        content: str = "",
+        tags: Optional[list[str]] = None,
+    ) -> str:
+        """用户明确提供标题和内容，要求新建一篇笔记时使用。
+
+        Args:
+            title: 笔记标题，必填。
+            content: 笔记正文，可为空。
+            tags: 标签数组，没有标签时传空数组。
+        """
+        return _tool_result_json(
+            session,
+            "create_note",
+            {"title": title, "content": content, "tags": tags or []},
+        )
+
+    @tool
+    def add_rss_source(name: str, url: str) -> str:
+        """用户要求添加 RSS 订阅源时使用。
+
+        Args:
+            name: RSS 源名称，必填。
+            url: RSS 地址，必须是 http 或 https 链接。
+        """
+        return _tool_result_json(
+            session,
+            "add_rss_source",
+            {"name": name, "url": url},
+        )
+
+    @tool
+    def fetch_rss(source_id: str) -> str:
+        """用户要求抓取单个 RSS，或抓取所有 RSS 时使用。
+
+        Args:
+            source_id: RSS 源 ID；抓取全部时传 all。
+        """
+        return _tool_result_json(
+            session,
+            "fetch_rss",
+            {"source_id": source_id},
+        )
+
+    @tool
+    def get_stats() -> str:
+        """用户询问笔记数量、今日新增、待处理数、RSS 源数量时使用。"""
+        return _tool_result_json(session, "get_stats", {})
+
+    @tool
+    def get_pending() -> str:
+        """用户询问待处理队列或待处理内容时使用。"""
+        return _tool_result_json(session, "get_pending", {})
+
+    @tool
+    def process_pending(item_id: int) -> str:
+        """处理某条待处理内容并生成预览；不会自动保存。
+
+        Args:
+            item_id: 待处理内容 ID。
+        """
+        return _tool_result_json(
+            session,
+            "process_pending",
+            {"item_id": item_id},
+        )
+
+    @tool
+    def save_pending_item(
+        item_id: int,
+        title: str,
+        content: str,
+        tags: Optional[list[str]] = None,
+    ) -> str:
+        """用户确认保存待处理内容预览时使用。
+
+        Args:
+            item_id: 待处理内容 ID。
+            title: 预览标题。
+            content: 预览正文。
+            tags: 标签数组，没有标签时传空数组。
+        """
+        return _tool_result_json(
+            session,
+            "save_pending_item",
+            {
+                "item_id": item_id,
+                "title": title,
+                "content": content,
+                "tags": tags or [],
+            },
+        )
+
+    @tool
+    def answer_question(question: str) -> str:
+        """用户提出知识性问题，并希望只基于笔记库回答时使用。
+
+        Args:
+            question: 用户的问题，必填。
+        """
+        return _tool_result_json(
+            session,
+            "answer_question",
+            {"question": question},
+        )
+
+    return [
+        search_notes,
+        create_note,
+        add_rss_source,
+        fetch_rss,
+        get_stats,
+        get_pending,
+        process_pending,
+        save_pending_item,
+        answer_question,
+    ]
+
+
 # ============ 历史和主流程 ============
 def _clean_history(history: list[dict[str, Any]] | None) -> list[dict[str, str]]:
     """清理前端历史，只保留普通用户和助手消息。"""
@@ -462,98 +607,23 @@ def _clean_history(history: list[dict[str, Any]] | None) -> list[dict[str, str]]
     return cleaned[-MAX_HISTORY_ITEMS:]
 
 
-def chat(user_message: str, history: list[dict[str, Any]] | None, session: Session) -> dict[str, Any]:
-    """Agent 主入口：Function Calling、工具执行、自然语言总结。"""
-    message = (user_message or "").strip()
-    if not message:
-        raise AgentError("消息不能为空")
-
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(_clean_history(history))
-    messages.append({"role": "user", "content": message[:MAX_MESSAGE_LENGTH]})
-
-    actions: list[dict[str, Any]] = []
-    try:
-        for _round in range(MAX_TOOL_ROUNDS):
-            completion = _create_completion(messages, use_tools=True)
-            response_message = completion.choices[0].message
-            tool_calls = getattr(response_message, "tool_calls", None)
-
-            if not tool_calls:
-                answer = response_message.content
-                if not answer:
-                    raise AgentError("AI 返回内容为空")
-                return {"answer": answer.strip(), "actions": actions}
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": response_message.content,
-                "tool_calls": [_tool_call_dict(call) for call in tool_calls],
-            }
-            messages.append(assistant_message)
-
-            for call in tool_calls:
-                name, arguments, parse_error = _parse_tool_call(call)
-                if parse_error:
-                    result = {
-                        "ok": False,
-                        "error": parse_error,
-                        "summary": "工具参数解析失败",
-                    }
-                else:
-                    result = execute_tool(session, name, arguments)
-                actions.append({
-                    "name": name,
-                    "arguments": _safe_arguments(arguments),
-                    "ok": result["ok"],
-                    "summary": result.get("summary", ""),
-                    **({"error": result["error"]} if not result["ok"] else {}),
-                })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": getattr(call, "id", ""),
-                    "name": name,
-                    "content": _json_dumps(result),
-                })
-
-            if _round == MAX_TOOL_ROUNDS - 1:
-                return {
-                    "answer": "操作步骤太多，请分成两步告诉我。",
-                    "actions": actions,
-                }
-    except ai_service.AiError as exc:
-        if _unsupported_tools(str(exc)):
-            return _fallback_without_tools(message, history, session)
-        raise
-
-    raise AgentError("Agent 执行异常")
-
-
-def _tool_call_dict(call: Any) -> dict[str, Any]:
-    """把 SDK tool_call 转成下一轮请求可用的字典。"""
-    function = getattr(call, "function", None)
-    return {
-        "id": getattr(call, "id", ""),
-        "type": getattr(call, "type", "function"),
-        "function": {
-            "name": getattr(function, "name", ""),
-            "arguments": getattr(function, "arguments", "{}"),
-        },
-    }
-
-
-def _parse_tool_call(call: Any) -> tuple[str, dict[str, Any], str | None]:
-    """解析单次工具名和参数；参数 JSON 损坏时返回错误说明。"""
-    function = getattr(call, "function", None)
-    name = getattr(function, "name", "")
-    raw_arguments = getattr(function, "arguments", "{}")
-    try:
-        arguments = json.loads(raw_arguments or "{}")
-    except json.JSONDecodeError as exc:
-        return name, {}, f"工具参数不是合法 JSON：{exc}"
-    if not isinstance(arguments, dict):
-        return name, {}, "工具参数必须是 JSON 对象"
-    return name, arguments, None
+def _build_agent(session: Session) -> AgentExecutor:
+    """创建 LangChain 工具调用 Agent。"""
+    tools = _build_tools(session)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+    agent = create_tool_calling_agent(_chat_model(), tools, prompt)
+    return AgentExecutor(
+        agent=agent,
+        tools=tools,
+        max_iterations=MAX_TOOL_ROUNDS,
+        handle_parsing_errors=True,
+        return_intermediate_steps=True,
+    )
 
 
 def _safe_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -566,12 +636,100 @@ def _safe_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _json_dumps(value: Any) -> str:
-    """JSON 序列化；日期等复杂类型转字符串。"""
-    return json.dumps(value, ensure_ascii=False, default=str)
+def _actions_from_steps(steps: list[tuple[Any, Any]]) -> list[dict[str, Any]]:
+    """从 AgentExecutor 中间步骤恢复前端操作记录。"""
+    actions: list[dict[str, Any]] = []
+    for agent_action, observation in steps:
+        name = getattr(agent_action, "tool", "")
+        raw_arguments = getattr(agent_action, "tool_input", {})
+        arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+        try:
+            result = json.loads(observation)
+        except (TypeError, json.JSONDecodeError):
+            result = {
+                "ok": False,
+                "summary": "工具返回格式异常",
+                "error": str(observation),
+            }
+
+        action: dict[str, Any] = {
+            "name": name,
+            "arguments": _safe_arguments(arguments),
+            "ok": bool(result.get("ok")),
+            "summary": result.get("summary", ""),
+        }
+        if not action["ok"]:
+            action["error"] = result.get("error", "工具执行失败")
+        actions.append(action)
+    return actions
+
+
+def chat(
+    user_message: str,
+    history: list[dict[str, Any]] | None,
+    session: Session,
+) -> dict[str, Any]:
+    """Agent 主入口：工具调用、工具执行、自然语言总结。"""
+    message = (user_message or "").strip()
+    if not message:
+        raise AgentError("消息不能为空")
+
+    try:
+        result = _build_agent(session).invoke({
+            "input": message[:MAX_MESSAGE_LENGTH],
+            "history": _clean_history(history),
+        })
+    except Exception as exc:  # noqa: BLE001 - 需要区分兼容降级和普通模型错误
+        text = str(exc)
+        if _unsupported_tools(text):
+            return _fallback_without_tools(message, history, session)
+        raise AgentError(f"AI 调用失败：{text}") from exc
+
+    intermediate_steps = result.get("intermediate_steps") or []
+    actions = _actions_from_steps(intermediate_steps)
+    if len(intermediate_steps) >= MAX_TOOL_ROUNDS:
+        return {
+            "answer": "操作步骤太多，请分成两步告诉我。",
+            "actions": actions,
+        }
+
+    answer = (result.get("output") or "").strip()
+    if not answer:
+        raise AgentError("AI 返回内容为空")
+    return {"answer": answer, "actions": actions}
+
+
+def _unsupported_tools(message: str) -> bool:
+    """判断错误是否明确表示不支持 Function Calling。"""
+    lower = message.lower()
+    return any(
+        text in lower
+        for text in ("tools", "tool_calls", "function calling", "function_calling")
+    )
 
 
 # ============ 无 Function Calling 降级 ============
+def _create_completion(messages: list[dict[str, Any]]) -> Any:
+    """降级路径调用聊天模型，不传 tools。"""
+    base_url, model, api_key = _model_settings()
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise AgentError("当前环境缺少 openai 库") from exc
+
+    client = OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=30,
+        max_retries=1,
+    )
+    try:
+        return client.chat.completions.create(model=model, messages=messages)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("降级模型调用失败：%s", exc)
+        raise ai_service.AiError(f"AI 调用失败：{exc}") from exc
+
+
 def _fallback_without_tools(
     user_message: str,
     history: list[dict[str, Any]] | None,
@@ -584,17 +742,18 @@ def _fallback_without_tools(
         {"role": "user", "content": user_message[:MAX_MESSAGE_LENGTH]},
     ]
 
-    plan_text = _fallback_plan_text(base_messages, strict=False)
+    plan_text = _fallback_plan_text(base_messages)
     calls = _parse_fallback_plan(plan_text)
     if calls is None:
         base_messages[0] = {"role": "system", "content": FALLBACK_STRICT_PROMPT}
-        plan_text = _fallback_plan_text(base_messages, strict=True)
-        calls = _parse_fallback_plan(plan_text)
+        calls = _parse_fallback_plan(_fallback_plan_text(base_messages))
     if calls is None:
         raise AgentError("当前模型不支持 Function Calling，且指令解析失败，请更换模型")
     if not calls:
-        answer = _fallback_plain_answer(user_message, history)
-        return {"answer": answer, "actions": []}
+        return {
+            "answer": _fallback_plain_answer(user_message, history),
+            "actions": [],
+        }
     if len(calls) > 1:
         return {
             "answer": "当前模型的兼容模式一次只能执行一个操作，请分两步告诉我。",
@@ -616,17 +775,17 @@ def _fallback_without_tools(
 
     answer_messages = [
         {"role": "system", "content": "根据工具执行结果，用一句到几句中文简洁回复用户。"},
-        {"role": "user", "content": f"工具结果：{_json_dumps(result)}\n用户原始请求：{user_message}"},
+        {"role": "user", "content": f"工具结果：{json.dumps(result, ensure_ascii=False, default=str)}\n用户原始请求：{user_message}"},
     ]
-    completion = _create_completion(answer_messages, use_tools=False)
+    completion = _create_completion(answer_messages)
     answer = completion.choices[0].message.content or "操作已完成"
     return {"answer": answer.strip(), "actions": [action]}
 
 
-def _fallback_plan_text(messages: list[dict[str, Any]], strict: bool) -> str:
+def _fallback_plan_text(messages: list[dict[str, Any]]) -> str:
     """请求降级模式的工具计划。"""
     try:
-        completion = _create_completion(messages, use_tools=False)
+        completion = _create_completion(messages)
         return completion.choices[0].message.content or ""
     except ai_service.AiError as exc:
         raise AgentError(str(exc)) from exc
@@ -641,17 +800,18 @@ def _parse_fallback_plan(text: str) -> list[dict[str, Any]] | None:
     except json.JSONDecodeError:
         return None
     calls = payload.get("calls")
-    if not isinstance(calls, list):
-        return None
-    return calls
+    return calls if isinstance(calls, list) else None
 
 
-def _fallback_plain_answer(user_message: str, history: list[dict[str, Any]] | None) -> str:
+def _fallback_plain_answer(
+    user_message: str,
+    history: list[dict[str, Any]] | None,
+) -> str:
     """无需工具时的普通回答。"""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": "你是知识消化平台的智能助手，用中文简洁自然地回复。"},
         *_clean_history(history),
         {"role": "user", "content": user_message},
     ]
-    completion = _create_completion(messages, use_tools=False)
+    completion = _create_completion(messages)
     return (completion.choices[0].message.content or "你好，我在。").strip()
