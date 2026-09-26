@@ -636,7 +636,20 @@
           </ul>
         </td>
       </tr>
-
+      <tr>
+        <td class="ver">知识消化平台 v2.2.0</td>
+        <td class="time">2026-09-26 19:32</td>
+        <td>
+          <span class="tag">LangChain</span><span class="tag">重构</span><b>LangChain 重构 Agent 与 RAG</b>：
+          <ul>
+            <li>Agent 主路径改为 LangChain 标准实现：使用 <code>@tool</code>、<code>create_tool_calling_agent</code> 和 <code>AgentExecutor</code>，继续保留多轮工具调用能力。</li>
+            <li>共保留 9 个工具，包括搜索笔记、创建笔记、添加 RSS 源、抓取 RSS、统计、待处理队列、处理预览、确认保存和基于笔记问答；不新增删除工具。</li>
+            <li>RAG 改为自定义 <code>BaseRetriever</code> 检索 ChromaDB，再通过 LCEL 问答链限制模型只基于笔记内容回答。</li>
+            <li>保持现有 API 路径、请求参数、响应信封和前端页面不变；模型不支持工具调用时继续使用提示词 JSON 降级方案。</li>
+            <li>本版不新增数据表；README 同步更新为 v2.2.0。</li>
+          </ul>
+        </td>
+      </tr>
 
     </tbody>
   </table>
