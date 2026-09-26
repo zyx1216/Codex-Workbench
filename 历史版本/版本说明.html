@@ -651,6 +651,21 @@
         </td>
       </tr>
 
+          <tr>
+        <td class="ver">知识消化平台 v2.3.0</td>
+        <td class="time">2026-09-26 20:48</td>
+        <td>
+          <span class="tag">自动关联</span><span class="tag">质量评估</span><b>笔记自动关联与改写质量评估</b>：
+          <ul>
+            <li><code>notes</code> 表新增 <code>related_ids</code> 和 <code>quality_score</code>；旧版 SQLite 启动时通过幂等补列自动补齐，不引入 Alembic。</li>
+            <li>笔记完成向量索引后，用标题、标签和正文前 1000 字检索相似笔记，严格保留相关度大于 0.5 的前 5 个关联 ID；失效 ID 查询时自动跳过。</li>
+            <li>新增 AI 质量评估 JSON 协议，从准确性、通俗性、完整性三个维度给出 1–5 分和简短理由；保存笔记后由单守护线程串行评估，不阻塞保存。</li>
+            <li>支持按“通俗 / 精简 / 详细”三种风格重新生成，同步更新正文、标签、向量索引、关联笔记和质量评分。</li>
+            <li>笔记卡片显示星级评分和低分提示；详情页展示评估理由、关联笔记卡片，并支持点击关联卡片切换展开目标笔记。</li>
+            <li>新增关联、立即评估和重生成 API；所有响应继续统一使用 <code>{code, message, data}</code>，本版不新增数据表、依赖和删除类 Agent 工具。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
