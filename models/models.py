@@ -57,3 +57,21 @@ class PendingItem(Base):
     source = Column(String(50), nullable=True, comment="来源")
     status = Column(String(20), nullable=False, default="pending", comment="状态")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+class FetchLog(Base):
+    """RSS 抓取日志表；source_name 为“全部”时表示整批抓取。"""
+
+    __tablename__ = "fetch_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('success', 'failed', 'running')",
+            name="ck_fetch_logs_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_name = Column(String(200), nullable=False, comment="源名称")
+    status = Column(String(20), nullable=False, comment="执行状态")
+    message = Column(String(500), nullable=False, default="", comment="结果信息")
+    new_count = Column(Integer, nullable=False, default=0, comment="新增待处理条数")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)

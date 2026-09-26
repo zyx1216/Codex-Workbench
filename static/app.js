@@ -1069,9 +1069,101 @@ async function testConnection() {
   } catch (_) { /* ignore */ }
 }
 
+/* ============ 设置页：定时抓取 ============ */
+function updateSwitchText() {
+  const input = $("#scheduler-enabled");
+  const text = input.closest(".field").querySelector(".switch-text");
+  text.textContent = input.checked ? "开启" : "关闭";
+}
+
+async function loadSchedulerConfig() {
+  try {
+    const res = await fetchJson("/api/scheduler/config");
+    const cfg = res.data || {};
+    $("#scheduler-enabled").checked = Boolean(cfg.enabled);
+    $("#scheduler-time").value = cfg.fetch_time || "08:00";
+    updateSwitchText();
+  } catch (_) { /* 配置加载失败不打扰 */ }
+}
+
+async function saveSchedulerSettings() {
+  const payload = {
+    enabled: $("#scheduler-enabled").checked,
+    fetch_time: $("#scheduler-time").value || "08:00",
+  };
+  try {
+    const res = await fetchJson("/api/scheduler/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const cfg = res.data || {};
+    $("#scheduler-enabled").checked = Boolean(cfg.enabled);
+    $("#scheduler-time").value = cfg.fetch_time || "08:00";
+    updateSwitchText();
+    toast(res.message || "定时抓取设置已保存", "success");
+    await loadSchedulerLogs();
+  } catch (_) { /* 失败已有统一 toast */ }
+}
+
+async function runFetchNow(button) {
+  const oldHtml = button.innerHTML;
+  button.disabled = true;
+  button.innerHTML = "⏳ 正在抓取…";
+  try {
+    const res = await fetchJson("/api/scheduler/run-now", { method: "POST" });
+    toast(res.message || "抓取完成", "success");
+    await Promise.all([
+      loadSchedulerLogs(),
+      loadPendingItems(),
+      loadStats(),
+    ]);
+  } catch (_) {
+    /* 失败已有统一 toast */
+  } finally {
+    button.disabled = false;
+    button.innerHTML = oldHtml;
+  }
+}
+
+async function loadSchedulerLogs() {
+  const host = $("#scheduler-logs");
+  try {
+    const res = await fetchJson("/api/scheduler/logs?limit=50");
+    const logs = res.data || [];
+    if (!logs.length) {
+      host.innerHTML = '<div class="log-empty">暂无抓取日志</div>';
+      return;
+    }
+
+    const statusText = {
+      success: "成功",
+      failed: "失败",
+      running: "执行中",
+    };
+
+    host.innerHTML = logs.map((log) => `
+      <div class="log-item">
+        <div class="log-head">
+          <span class="log-status ${escapeHtml(log.status)}">${statusText[log.status] || log.status}</span>
+          <span class="log-source">${escapeHtml(log.source_name || "")}</span>
+          <span class="log-time">${formatTime(log.created_at)}</span>
+        </div>
+        <div class="log-message">${escapeHtml(log.message || "")}</div>
+        <div class="log-count">新增 ${Number(log.new_count || 0)} 条</div>
+      </div>
+    `).join("");
+  } catch (_) {
+    host.innerHTML = '<div class="log-empty">日志加载失败</div>';
+  }
+}
+
 function bindSettings() {
   $("#btn-save").addEventListener("click", saveConfig);
   $("#btn-test").addEventListener("click", testConnection);
+  $("#scheduler-enabled").addEventListener("change", updateSwitchText);
+  $("#btn-save-scheduler").addEventListener("click", saveSchedulerSettings);
+  $("#btn-run-now").addEventListener("click", (event) => runFetchNow(event.currentTarget));
   $$('[data-action="export"], [data-action="import"]').forEach((btn) => {
     btn.addEventListener("click", () => toast("数据导入导出将在后续版本实现", "warning"));
   });
@@ -1108,4 +1200,6 @@ document.addEventListener("DOMContentLoaded", () => {
   loadStats();
   loadRecentNotes();
   loadConfig();
+  loadSchedulerConfig();
+  loadSchedulerLogs();
 });

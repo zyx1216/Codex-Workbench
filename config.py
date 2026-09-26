@@ -13,9 +13,10 @@ EXPORT_DIR = DATA_DIR / "exports"
 DB_PATH = DATA_DIR / "database.db"
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 AI_CONFIG_PATH = DATA_DIR / "ai_config.json"
+SCHEDULER_CONFIG_PATH = DATA_DIR / "scheduler_config.json"
 
 APP_NAME = "知识消化平台"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 
 def ensure_dirs() -> None:

@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v1.4 · FastAPI 主入口。
+知识消化平台 v1.5 · FastAPI 主入口。
 
 - 启动时初始化数据目录和 SQLite 表
 - 挂载 /static 提供前端资源
-- v1.0 占位 API 保留；新增链接处理、笔记 CRUD
+- 保留既有功能；新增定时自动抓取和抓取日志
 - 根路径返回单页应用入口 index.html
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,13 +20,29 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config
-from services import ai_service, crawler_service, file_service, note_service, rss_service
+from services import (
+    ai_service, crawler_service, file_service,
+    note_service, rss_service, scheduler_service,
+)
 from services.db import get_db, init_db
 
 # 启动时确保表就绪（幂等）
 init_db()
 
-app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """应用启动时启动调度器，关闭时停止后台线程。"""
+    init_db()
+    scheduler_service.start_scheduler()
+    yield
+    scheduler_service.stop_scheduler()
+
+
+app = FastAPI(
+    title=config.APP_NAME,
+    version=config.APP_VERSION,
+    lifespan=lifespan,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -78,6 +95,13 @@ class ProcessedSaveRequest(BaseModel):
     title: str = ""
     content: str = ""
     tags: list[str] = []
+
+
+class SchedulerConfigRequest(BaseModel):
+    """定时抓取配置请求体。"""
+
+    enabled: bool = False
+    fetch_time: str = "08:00"
 
 
 def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
@@ -386,6 +410,41 @@ def delete_pending(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(None, message="待处理项已删除")
 
+
+
+# ============ v1.5：定时自动抓取 ============
+@app.get("/api/scheduler/config")
+def get_scheduler_config():
+    """读取定时抓取配置。"""
+    return ok(scheduler_service.load_config())
+
+
+@app.put("/api/scheduler/config")
+def put_scheduler_config(payload: SchedulerConfigRequest):
+    """更新定时抓取开关和每日执行时间。"""
+    try:
+        cfg = scheduler_service.update_schedule(
+            payload.enabled, payload.fetch_time
+        )
+    except scheduler_service.SchedulerError as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok(cfg, message="定时抓取设置已保存")
+
+
+@app.get("/api/scheduler/logs")
+def get_scheduler_logs(limit: int = Query(default=50, ge=1, le=200)):
+    """读取最近抓取日志。"""
+    return ok(scheduler_service.get_logs(limit))
+
+
+@app.post("/api/scheduler/run-now")
+def scheduler_run_now():
+    """立即执行一次全部 RSS 抓取。"""
+    try:
+        result = scheduler_service.run_now()
+    except scheduler_service.SchedulerBusy as exc:
+        return {"code": 1, "message": str(exc), "data": None}
+    return ok(result, message=f"抓取完成，新增 {result['total_added']} 条")
 
 
 # 静态资源（CSS / JS）放在 /static 下，需在所有路由之后挂载

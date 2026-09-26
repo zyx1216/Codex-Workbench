@@ -129,39 +129,63 @@ def _entry_time(entry: Any) -> datetime:
     return datetime.now()
 
 
+def _log_fetch_result(
+    source_name: str,
+    status: str,
+    message: str,
+    new_count: int,
+) -> None:
+    """记录单个源或整批抓取结果。"""
+    from services import scheduler_service
+
+    scheduler_service.add_log(source_name, status, message, new_count)
+
+
 def fetch_source(session: Any, source_id: int) -> int:
     """抓取单个 RSS 源的新条目，返回本次新增条数。"""
     source = get_source_by_id(session, source_id)
-    parsed = _read_feed(source.url)
+    try:
+        parsed = _read_feed(source.url)
 
-    pending_urls = set(session.scalars(select(PendingItem.url)).all())
-    note_urls = {
-        url for url in session.scalars(select(Note.original_url)).all()
-        if url
-    }
-    known_urls = pending_urls | note_urls
-    feed_urls: set[str] = set()
-    now = datetime.now()
+        pending_urls = set(session.scalars(select(PendingItem.url)).all())
+        note_urls = {
+            url for url in session.scalars(select(Note.original_url)).all()
+            if url
+        }
+        known_urls = pending_urls | note_urls
+        feed_urls: set[str] = set()
+        now = datetime.now()
 
-    for entry in parsed.entries:
-        link = (entry.get("link") or "").strip()
-        if not link or link in known_urls or link in feed_urls:
-            continue
-        feed_urls.add(link)
-        session.add(PendingItem(
-            url=link,
-            title=(entry.get("title") or "").strip() or "无标题",
-            source=source.name,
-            status="pending",
-            created_at=_entry_time(entry),
-        ))
+        for entry in parsed.entries:
+            link = (entry.get("link") or "").strip()
+            if not link or link in known_urls or link in feed_urls:
+                continue
+            feed_urls.add(link)
+            session.add(PendingItem(
+                url=link,
+                title=(entry.get("title") or "").strip() or "无标题",
+                source=source.name,
+                status="pending",
+                created_at=_entry_time(entry),
+            ))
 
-    source.last_fetched = now
-    session.commit()
+        source.last_fetched = now
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        _log_fetch_result(source.name, "failed", f"抓取失败：{exc}", 0)
+        raise
+
+    _log_fetch_result(
+        source.name,
+        "success",
+        f"抓取完成，新增 {len(feed_urls)} 条",
+        len(feed_urls),
+    )
     return len(feed_urls)
 
 
-def fetch_all_sources(session: Any) -> list[dict[str, Any]]:
+def fetch_all_sources(session: Any, log_summary: bool = True) -> list[dict[str, Any]]:
     """抓取全部源；单个源失败只影响该源。"""
     results: list[dict[str, Any]] = []
     for source in list_sources(session):
@@ -173,13 +197,23 @@ def fetch_all_sources(session: Any) -> list[dict[str, Any]]:
                 "added": added,
                 "error": "",
             })
-        except RssError as exc:
+        except Exception as exc:
             results.append({
                 "id": source.id,
                 "name": source.name,
                 "added": 0,
-                "error": str(exc),
+                "error": str(exc) or "抓取失败",
             })
+
+    if log_summary:
+        total_added = sum(int(item["added"]) for item in results)
+        failed_count = sum(1 for item in results if item["error"])
+        status = "failed" if failed_count else "success"
+        if failed_count:
+            message = f"全部抓取完成，新增 {total_added} 条，{failed_count} 个源失败"
+        else:
+            message = f"全部抓取完成，新增 {total_added} 条"
+        _log_fetch_result("全部", status, message, total_added)
     return results
 
 

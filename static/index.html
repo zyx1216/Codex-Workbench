@@ -127,6 +127,28 @@
         </div>
       </div>
 
+      <h2 class="section-title gradient-text">定时抓取</h2>
+      <div class="card glass form-card">
+        <div class="field">
+          <div class="field-label">自动抓取</div>
+          <label class="switch-field" for="scheduler-enabled">
+            <input type="checkbox" id="scheduler-enabled" class="switch-input" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">关闭</span>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">每日抓取时间</span>
+          <input type="time" id="scheduler-time" class="input time-input"
+                 value="08:00" required />
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-scheduler">保存设置</button>
+          <button class="btn btn-ghost" id="btn-run-now">立即抓取一次</button>
+        </div>
+        <div class="log-list" id="scheduler-logs"></div>
+      </div>
+
       <h2 class="section-title">数据管理</h2>
       <div class="card glass form-card">
         <div class="field">
