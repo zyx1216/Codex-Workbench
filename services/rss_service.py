@@ -249,7 +249,7 @@ def process_pending_item(session: Any, item_id: int) -> dict[str, Any]:
     extracted = crawler_service.extract_content(html_bytes, final_url)
     title = item.title or extracted["title"] or "无标题"
     content = ai_service.rewrite_to_plain(title, extracted["content"])
-    tags = ai_service.generate_tags(title, extracted["content"])
+    tags = note_service.clean_tag_list(ai_service.generate_tags(title, extracted["content"]))
     return {
         "item_id": item.id,
         "title": title,

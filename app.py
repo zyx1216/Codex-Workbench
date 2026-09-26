@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v1.6 · FastAPI 主入口。
+知识消化平台 v2.0 · FastAPI 主入口。
 
 - 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
-- 提供链接处理、文件上传、RSS、笔记管理、语义搜索和 RAG 问答接口
+- 提供链接处理、文件上传、RSS、笔记管理、语义搜索、RAG 问答和 Agent 自然语言操作接口
 - 所有 API 统一返回 {code, message, data}
 """
 
@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 import config
 from services import (
     ai_service,
+    agent_service,
     crawler_service,
     file_service,
     note_service,
@@ -119,6 +120,13 @@ class AskRequest(BaseModel):
     """RAG 问答请求体。"""
 
     question: str
+
+
+class AgentChatRequest(BaseModel):
+    """Agent 聊天请求体；历史只在本次请求和前端内存中存在。"""
+
+    message: str
+    history: list[dict[str, str]] = []
 
 
 def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
@@ -529,6 +537,25 @@ def vector_sync():
     except vector_service.VectorError as exc:
         return fail(str(exc))
     return ok({"status": "running"}, message="向量同步已开始，首次下载模型可能较慢")
+
+
+# ============ v2.0：Agent Function Calling ============
+@app.get("/api/agent/tools")
+def get_agent_tools():
+    """返回 Agent 可用工具定义。"""
+    return ok(agent_service.list_tools())
+
+
+@app.post("/api/agent/chat")
+def agent_chat(payload: AgentChatRequest, db: Session = Depends(get_db)):
+    """自然语言操作入口：Function Calling、工具执行和自然语言总结。"""
+    try:
+        result = agent_service.chat(
+            payload.message, payload.history, db
+        )
+    except (agent_service.AgentError, ai_service.AiError) as exc:
+        return fail(str(exc))
+    return ok(result)
 
 
 # 静态资源放在 /static 下，需在所有路由之后挂载

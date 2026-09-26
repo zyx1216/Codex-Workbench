@@ -15,7 +15,7 @@
       <button class="nav-btn active" data-tab="home">首页</button>
       <button class="nav-btn" data-tab="notes">笔记库</button>
       <button class="nav-btn" data-tab="feed">订阅</button>
-      <button class="nav-btn" data-tab="qa">AI 问答</button>
+      <button class="nav-btn" data-tab="qa">AI 助手</button>
       <button class="nav-btn" data-tab="settings">设置</button>
     </nav>
   </header>
@@ -103,31 +103,38 @@
     </section>
 
 
-    <!-- AI 问答 -->
+    <!-- AI 助手 -->
     <section class="tab" data-tab="qa">
-      <h2 class="section-title gradient-text">AI 问答</h2>
+      <h2 class="section-title gradient-text">AI 助手</h2>
 
-      <div class="card glass vector-panel">
-        <div class="vector-info">
-          <span class="vector-count" id="qa-vector-count">向量笔记：0</span>
-          <span class="vector-state" id="qa-vector-state">状态：空闲</span>
+      <div class="card glass agent-page">
+        <div class="agent-status-bar">
+          <div class="vector-info">
+            <span class="vector-count" id="qa-vector-count">向量笔记：0</span>
+            <span class="vector-state" id="qa-vector-state">状态：空闲</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
         </div>
-        <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
-        <p class="hint vector-hint">首次使用语义搜索会下载本地向量模型，可能耗时较久；模型只下载这一次。</p>
-      </div>
 
-      <div class="card glass form-card qa-form-card">
-        <label class="field">
-          <span class="field-label">基于笔记库提问</span>
-          <textarea id="qa-question" class="input textarea" rows="5"
-                    placeholder="例如：这些笔记里关于人工智能的核心观点是什么？"></textarea>
-        </label>
-        <div class="btn-row">
-          <button class="btn btn-primary" id="btn-ask">提问</button>
+        <div class="agent-quick-commands" aria-label="快捷指令">
+          <button class="agent-quick-btn" type="button">今天有什么新内容</button>
+          <button class="agent-quick-btn" type="button">搜索人工智能相关笔记</button>
+          <button class="agent-quick-btn" type="button">添加RSS源</button>
+          <button class="agent-quick-btn" type="button">抓取所有RSS</button>
         </div>
-      </div>
 
-      <div id="qa-result" class="qa-result"></div>
+        <div class="agent-chat-log" id="agent-chat-log">
+          <div class="agent-empty">用大白话告诉我要查什么、记什么，或要操作 RSS。</div>
+        </div>
+
+        <div class="agent-composer">
+          <textarea id="agent-message-input" class="input textarea" rows="2"
+                    placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <button class="btn btn-primary" id="btn-agent-send" type="button">发送</button>
+        </div>
+
+        <p class="hint">助手会先调用工具再总结；删除类操作不会由 AI 直接执行。</p>
+      </div>
     </section>
 
     <!-- 设置 -->

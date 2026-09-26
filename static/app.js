@@ -1207,8 +1207,21 @@ function bindSettings() {
 }
 
 
-/* ============ v1.6：AI 问答和向量同步 ============ */
+/* ============ v2.0：AI 助手聊天和向量同步 ============ */
 let qaPollTimer = null;
+let agentHistory = [];
+
+const TOOL_NAME_TEXT = {
+  search_notes: "搜索笔记",
+  create_note: "创建笔记",
+  add_rss_source: "添加 RSS",
+  fetch_rss: "抓取 RSS",
+  get_stats: "获取统计",
+  get_pending: "查看待处理",
+  process_pending: "处理待办",
+  save_pending_item: "保存预览",
+  answer_question: "知识问答",
+};
 
 function stateText(status) {
   return {
@@ -1224,9 +1237,16 @@ async function loadVectorStats() {
     const res = await fetchJson("/api/vector/stats");
     const d = res.data || {};
     $("#qa-vector-count").textContent = `向量笔记：${d.note_count ?? 0}`;
-    $("#qa-vector-state").textContent = `状态：${stateText(d.status || "idle")}`;
-    if (d.status === "running") startVectorPolling(false);
-    if (d.status === "done" || d.status === "failed") stopVectorPolling();
+    if (d.status === "running") {
+      const doneCount = Number(d.progress || 0);
+      const totalCount = Number(d.total || 0);
+      $("#qa-vector-state").textContent =
+        totalCount ? `状态：同步中 ${doneCount}/${totalCount}` : "状态：同步中";
+      startVectorPolling(false);
+    } else {
+      $("#qa-vector-state").textContent = `状态：${stateText(d.status || "idle")}`;
+      stopVectorPolling();
+    }
   } catch (err) {
     $("#qa-vector-state").textContent = `状态不可用：${err.message}`;
   }
@@ -1250,82 +1270,131 @@ async function syncVectorIndex() {
   setTimeout(loadVectorStats, 500);
 }
 
-async function askQuestion() {
-  const question = $("#qa-question").value.trim();
-  const resultBox = $("#qa-result");
-  const btn = $("#btn-ask");
-  if (!question) {
-    toast("请输入问题", "warning");
+async function sendAgentMessage(rawText) {
+  const text = (rawText || "").trim();
+  const input = $("#agent-message-input");
+  const sendBtn = $("#btn-agent-send");
+  if (!text) {
+    toast("请输入消息", "warning");
     return;
   }
 
-  btn.disabled = true;
-  const oldText = btn.textContent;
-  btn.textContent = "正在搜索笔记并生成回答…";
-  resultBox.innerHTML = '<div class="qa-loading">⏳ 正在搜索笔记并生成回答…</div>';
+  input.value = "";
+  appendUserMessage(text);
+  const typing = appendTypingMessage();
+  sendBtn.disabled = true;
+  scrollAgentLog();
 
   try {
-    const res = await fetchJson("/api/ask", {
+    const res = await fetchJson("/api/agent/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        message: text,
+        history: agentHistory,
+      }),
     });
-    renderQaResult(res.data || {});
+    renderAgentAnswer(res.data || {}, typing);
+    agentHistory.push({ role: "user", content: text });
+    agentHistory.push({
+      role: "assistant",
+      content: res.data?.answer || "",
+    });
   } catch (err) {
-    resultBox.innerHTML = `<div class="card glass empty">问答失败：${escapeHtml(err.message)}</div>`;
+    typing.remove();
+    appendAgentError(err.message || "发送失败");
   } finally {
-    btn.disabled = false;
-    btn.textContent = oldText;
+    sendBtn.disabled = false;
+    input.focus();
+    scrollAgentLog();
   }
 }
 
-function renderQaResult(data) {
-  const box = $("#qa-result");
-  box.innerHTML = "";
+function appendUserMessage(text) {
+  const el = document.createElement("div");
+  el.className = "agent-message agent-message-user";
+  el.textContent = text;
+  appendChatNode(el);
+}
 
-  const questionCard = document.createElement("div");
-  questionCard.className = "qa-question-bubble";
-  questionCard.textContent = $("#qa-question").value.trim();
-  box.appendChild(questionCard);
+function appendTypingMessage() {
+  const wrap = document.createElement("div");
+  wrap.className = "agent-message agent-message-ai";
+  wrap.innerHTML = '<span class="typing-dots"><i></i><i></i><i></i></span><span class="typing-text">思考中...</span>';
+  appendChatNode(wrap);
+  return wrap;
+}
 
-  const answerCard = document.createElement("div");
-  answerCard.className = "card glass qa-answer-card";
-  const answerText = document.createElement("div");
-  answerText.className = "qa-answer-text";
-  answerText.textContent = data.answer || "";
-  answerCard.appendChild(answerText);
-  box.appendChild(answerCard);
+function renderAgentAnswer(data, typingNode) {
+  typingNode.remove();
+  const card = document.createElement("div");
+  card.className = "agent-message agent-message-ai";
 
-  if (data.sources && data.sources.length) {
-    const sourceCard = document.createElement("div");
-    sourceCard.className = "card glass qa-sources";
-    const title = document.createElement("div");
-    title.className = "qa-sources-title";
-    title.textContent = "引用来源";
-    sourceCard.appendChild(title);
+  const answer = document.createElement("div");
+  answer.className = "agent-answer";
+  answer.textContent = data.answer || "";
+  card.appendChild(answer);
 
-    const chips = document.createElement("div");
-    chips.className = "qa-source-list";
-    data.sources.forEach((source) => {
-      const chip = document.createElement("button");
-      chip.className = "qa-source-chip";
-      chip.type = "button";
-      chip.textContent = `${source.title} · ${Math.round(source.score * 100)}%`;
-      chip.addEventListener("click", () => goToNote(source.id));
-      chips.appendChild(chip);
+  if (Array.isArray(data.actions) && data.actions.length) {
+    const actions = document.createElement("div");
+    actions.className = "agent-actions";
+    data.actions.forEach((action) => {
+      const item = document.createElement("div");
+      item.className = `agent-action ${action.ok ? "ok" : "failed"}`;
+      const toolName = TOOL_NAME_TEXT[action.name] || action.name;
+      item.innerHTML = `
+        <span class="agent-action-name">${escapeHtml(toolName)}</span>
+        <span class="agent-action-summary">${escapeHtml(action.summary || (action.ok ? "完成" : action.error || "失败"))}</span>`;
+      actions.appendChild(item);
     });
-    sourceCard.appendChild(chips);
-    box.appendChild(sourceCard);
+    card.appendChild(actions);
   }
+
+  appendChatNode(card);
+}
+
+function appendAgentError(message) {
+  const card = document.createElement("div");
+  card.className = "agent-message agent-message-ai agent-message-error";
+  card.textContent = message;
+  appendChatNode(card);
+}
+
+function appendChatNode(node) {
+  const log = $("#agent-chat-log");
+  const empty = $(".agent-empty", log);
+  if (empty) empty.remove();
+  log.appendChild(node);
+  scrollAgentLog();
+}
+
+function scrollAgentLog() {
+  const log = $("#agent-chat-log");
+  log.scrollTop = log.scrollHeight;
 }
 
 function bindQaPage() {
-  $("#btn-ask").addEventListener("click", askQuestion);
+  const input = $("#agent-message-input");
+  $("#btn-agent-send").addEventListener("click", () => sendAgentMessage(input.value));
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendAgentMessage(input.value);
+    }
+  });
+
+  $$(".agent-quick-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const text = btn.textContent.trim() === "添加RSS源"
+        ? "我要添加 RSS 源"
+        : btn.textContent.trim();
+      sendAgentMessage(text);
+    });
+  });
+
   $("#btn-vector-sync").addEventListener("click", () => {
     syncVectorIndex().catch((err) => toast(err.message || "同步启动失败", "error"));
-  });
-  $("#qa-question").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) askQuestion();
   });
 }
 

@@ -58,6 +58,17 @@ def _note_tags(note: Note) -> list[str]:
     return tags if isinstance(tags, list) else []
 
 
+
+
+def clean_tag_list(tags):
+    """标签列表去空白、去重并保持原顺序。"""
+    result = []
+    for tag in tags or []:
+        value = str(tag).strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
 def index_note(note: Note) -> tuple[bool, str]:
     """把已提交笔记写入向量库；失败时只设置警告，不回滚笔记。"""
     warning = ""
@@ -92,7 +103,7 @@ def create_note(
         content=content or "",
         original_url=(original_url or "").strip() or None,
         source=source or "手动输入",
-        tags=json.dumps(tags or [], ensure_ascii=False),
+        tags=json.dumps(clean_tag_list(tags), ensure_ascii=False),
         category=category or "默认",
         created_at=now,
         updated_at=now,
@@ -159,7 +170,7 @@ def update_note(
     note = get_note_by_id(session, note_id)
     note.title = (title or "").strip() or "无标题"
     note.content = content or ""
-    note.tags = json.dumps(tags or [], ensure_ascii=False)
+    note.tags = json.dumps(clean_tag_list(tags), ensure_ascii=False)
     note.category = (category or "").strip() or "默认"
     note.updated_at = datetime.now()
     session.commit()
