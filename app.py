@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v2.5 · FastAPI 主入口。
+知识消化平台 v2.6 · FastAPI 主入口。
 
 - 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
 - 提供链接处理、文件上传、RSS、笔记管理、语义搜索、RAG 问答和 Agent 自然语言操作接口
@@ -28,6 +28,7 @@ from services import (
     note_service,
     rag_service,
     rss_service,
+    schedule_service,
     scheduler_service,
     task_service,
     async_task_service,
@@ -142,6 +143,32 @@ class TaskUpdateRequest(BaseModel):
     note_id: int | None = None
 
 
+class ScheduleCreateRequest(BaseModel):
+    """日程创建请求体。"""
+
+    title: str
+    schedule_type: str = "日常"
+    start_time: str
+    end_time: str | None = None
+    location: str | None = None
+    description: str | None = None
+    note_id: int | None = None
+    color: str | None = None
+
+
+class ScheduleUpdateRequest(BaseModel):
+    """日程更新请求体；未传字段保持原值。"""
+
+    title: str | None = None
+    schedule_type: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    location: str | None = None
+    description: str | None = None
+    note_id: int | None = None
+    color: str | None = None
+
+
 class SchedulerConfigRequest(BaseModel):
     """定时抓取配置请求体。"""
 
@@ -191,6 +218,7 @@ def get_stats(db: Session = Depends(get_db)):
     """首页概览：笔记统计和任务统计。"""
     data = note_service.get_stats(db)
     data.update(task_service.get_stats(db))
+    data["today_schedules"] = schedule_service.get_today_count(db)
     return ok(data)
 
 
@@ -678,6 +706,96 @@ def uncomplete_user_task(task_id: int, db: Session = Depends(get_db)):
     except task_service.TaskNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(task_service.serialize_task(task), message="已取消完成")
+
+
+# ============ 日程计划与日历 ============
+@app.get("/api/schedules/today")
+def get_today_schedules(db: Session = Depends(get_db)):
+    """获取今日日程。"""
+    items = schedule_service.get_today_schedules(db)
+    return ok([schedule_service.serialize_schedule(item) for item in items])
+
+
+@app.get("/api/schedules/month")
+def get_month_schedules(year: int, month: int, db: Session = Depends(get_db)):
+    """获取某月日程。"""
+    try:
+        items = schedule_service.get_month_schedules(db, year, month)
+    except schedule_service.ScheduleError as exc:
+        return fail(str(exc))
+    return ok([schedule_service.serialize_schedule(item) for item in items])
+
+
+@app.get("/api/schedules")
+def list_schedules(
+    start_date: str,
+    end_date: str,
+    db: Session = Depends(get_db),
+):
+    """查询日期范围内的日程。"""
+    try:
+        items = schedule_service.list_schedules(db, start_date, end_date)
+    except schedule_service.ScheduleError as exc:
+        return fail(str(exc))
+    return ok([schedule_service.serialize_schedule(item) for item in items])
+
+
+@app.post("/api/schedules")
+def create_schedule(payload: ScheduleCreateRequest, db: Session = Depends(get_db)):
+    """创建日程。"""
+    try:
+        schedule = schedule_service.create_schedule(
+            db,
+            payload.title,
+            payload.schedule_type,
+            payload.start_time,
+            payload.end_time,
+            payload.location,
+            payload.description,
+            payload.note_id,
+            payload.color,
+        )
+    except schedule_service.ScheduleError as exc:
+        return fail(str(exc))
+    return ok(schedule_service.serialize_schedule(schedule), message="日程已创建")
+
+
+@app.get("/api/schedules/{schedule_id}")
+def get_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    """获取单个日程。"""
+    try:
+        schedule = schedule_service.get_schedule(db, schedule_id)
+    except schedule_service.ScheduleNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(schedule_service.serialize_schedule(schedule))
+
+
+@app.put("/api/schedules/{schedule_id}")
+def update_schedule(
+    schedule_id: int,
+    payload: ScheduleUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """更新日程。"""
+    try:
+        schedule = schedule_service.update_schedule(
+            db, schedule_id, **payload.model_dump(exclude_unset=True)
+        )
+    except schedule_service.ScheduleNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except schedule_service.ScheduleError as exc:
+        return fail(str(exc))
+    return ok(schedule_service.serialize_schedule(schedule), message="日程已更新")
+
+
+@app.delete("/api/schedules/{schedule_id}")
+def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    """删除日程。"""
+    try:
+        schedule_service.delete_schedule(db, schedule_id)
+    except schedule_service.ScheduleNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(None, message="日程已删除")
 
 
 # ============ 定时自动抓取 ============

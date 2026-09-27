@@ -13,11 +13,11 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 /* ============ tab 切换 ============ */
 function initTabs() {
-  $$$(".nav-btn").forEach((btn) => {
+  $$(".nav-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const target = btn.dataset.tab;
-      $$$(".nav-btn").forEach((b) => b.classList.toggle("active", b === btn));
-      $$$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === target));
+      $$(".nav-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === target));
       // 切到笔记库：拉筛选选项和列表；切回首页：刷新统计和最近笔记
       if (target === "notes") {
         initNotesFilters();
@@ -29,10 +29,13 @@ function initTabs() {
         loadStats();
         loadRecentNotes();
         loadHomeTaskPanels();
+        loadHomeSchedules();
       } else if (target === "qa") {
         loadVectorStats();
       } else if (target === "tasks") {
         loadUserTasks();
+      } else if (target === "calendar") {
+        loadCalendarMonth();
       } else if (target === "async-tasks") {
         loadTaskList();
       }
@@ -88,6 +91,10 @@ async function loadStats() {
       d.total_notes ?? 0,
       d.today_notes ?? 0,
       d.pending_count ?? 0,
+      d.total_tasks ?? 0,
+      d.today_tasks ?? 0,
+      d.completed_tasks ?? 0,
+      d.today_schedules ?? 0,
     ];
     $$(".counter").forEach((el, i) => animateCounter(el, targets[i]));
   } catch (_) { /* 首页统计失败不打扰 */ }
@@ -2340,6 +2347,473 @@ function bindStyleModal() {
   });
 }
 
+
+/* ============ v2.6 日程与月视图日历 ============ */
+let calendarState = {
+  year: new Date().getFullYear(),
+  month: new Date().getMonth() + 1,
+};
+let calendarRows = new Map();
+let scheduleDetailData = null;
+let editingScheduleId = null;
+
+const SCHEDULE_TYPE_COLORS = {
+  "日常": "#06b6d4",
+  "旅行": "#8b5cf6",
+  "工作": "#3b82f6",
+  "其他": "#64748b",
+};
+
+function padNumber(value) {
+  return String(value).padStart(2, "0");
+}
+
+function localDateKey(date) {
+  return `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())}`;
+}
+
+function startOfDate(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date, days) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function parseDateKey(key) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatChineseDate(date) {
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function toDateTimeLocalValue(date) {
+  return `${localDateKey(date)}T${padNumber(date.getHours())}:${padNumber(date.getMinutes())}`;
+}
+
+function calendarGridStart(year, month) {
+  const firstDay = new Date(year, month - 1, 1);
+  const offset = (firstDay.getDay() + 6) % 7;
+  return addDays(firstDay, -offset);
+}
+
+function buildScheduleMap(schedules, gridStart, gridEnd) {
+  const map = new Map();
+  for (let i = 0; i < 42; i += 1) {
+    map.set(localDateKey(addDays(gridStart, i)), []);
+  }
+
+  schedules.forEach((schedule) => {
+    const start = new Date(schedule.start_time);
+    let end = schedule.end_time ? new Date(schedule.end_time) : start;
+    if (Number.isNaN(start.getTime())) return;
+    if (Number.isNaN(end.getTime()) || end < start) end = start;
+
+    let cursor = startOfDate(new Date(Math.max(startOfDate(start), startOfDate(gridStart))));
+    const lastDay = startOfDate(new Date(Math.min(startOfDate(end), startOfDate(gridEnd))));
+
+    while (cursor <= lastDay) {
+      const key = localDateKey(cursor);
+      if (map.has(key)) map.get(key).push(schedule);
+      cursor = addDays(cursor, 1);
+    }
+  });
+
+  map.forEach((items) => {
+    items.sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
+  });
+  return map;
+}
+
+async function loadCalendarMonth() {
+  const gridStart = calendarGridStart(calendarState.year, calendarState.month);
+  const gridEnd = addDays(gridStart, 41);
+  const params = new URLSearchParams({
+    start_date: localDateKey(gridStart),
+    end_date: localDateKey(gridEnd),
+  });
+
+  const body = await fetchJson(`/api/schedules?${params}`);
+  calendarRows = buildScheduleMap(body.data || [], gridStart, gridEnd);
+  renderCalendar(gridStart);
+}
+
+function renderCalendar(gridStart) {
+  $("#calendar-month-title").textContent = `${calendarState.year}年${calendarState.month}月`;
+  const grid = $("#calendar-grid");
+  grid.innerHTML = "";
+
+  const todayKey = localDateKey(new Date());
+
+  for (let index = 0; index < 42; index += 1) {
+    const day = addDays(gridStart, index);
+    const key = localDateKey(day);
+    const items = calendarRows.get(key) || [];
+
+    const cell = document.createElement("div");
+    cell.className = "calendar-day";
+    if (day.getMonth() + 1 !== calendarState.month) cell.classList.add("outside-month");
+    if (key === todayKey) cell.classList.add("is-today");
+
+    const number = document.createElement("span");
+    number.className = "calendar-day-number";
+    number.textContent = day.getDate();
+    cell.appendChild(number);
+
+    const scheduleBox = document.createElement("div");
+    scheduleBox.className = "calendar-day-schedules";
+    items.slice(0, 3).forEach((schedule) => {
+      scheduleBox.appendChild(buildMiniSchedule(schedule));
+    });
+
+    if (items.length > 3) {
+      const more = document.createElement("span");
+      more.className = "calendar-more";
+      more.textContent = `+${items.length - 3}`;
+      scheduleBox.appendChild(more);
+    }
+
+    cell.appendChild(scheduleBox);
+    cell.addEventListener("click", () => openScheduleDay(day, items));
+    grid.appendChild(cell);
+  }
+}
+
+function buildMiniSchedule(schedule) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "calendar-schedule-item";
+  item.style.setProperty("--schedule-color", schedule.effective_color || "#5b8def");
+
+  const dot = document.createElement("span");
+  dot.className = "schedule-dot";
+  const title = document.createElement("span");
+  title.className = "calendar-schedule-title";
+  title.textContent = schedule.title;
+
+  item.appendChild(dot);
+  item.appendChild(title);
+  item.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openScheduleDetail(schedule);
+  });
+  return item;
+}
+
+function buildScheduleRow(schedule, showDate = false) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "schedule-list-row";
+  row.style.setProperty("--schedule-color", schedule.effective_color || "#5b8def");
+  const time = schedule.start_time ? schedule.start_time.slice(11, 16) : "--:--";
+  const prefix = showDate ? `${schedule.start_time?.slice(5, 10) || ""} ${time}` : time;
+  row.innerHTML = `
+    <span class="schedule-row-time">${escapeHtml(prefix)}</span>
+    <span class="schedule-row-title">${escapeHtml(schedule.title)}</span>
+    <span class="schedule-row-type">${escapeHtml(schedule.schedule_type)}</span>
+  `;
+  row.addEventListener("click", () => openScheduleDetail(schedule));
+  return row;
+}
+
+function openScheduleDay(day, items) {
+  $("#schedule-day-title").textContent = formatChineseDate(day);
+  const list = $("#schedule-day-list");
+  list.innerHTML = "";
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "schedule-day-empty";
+    empty.textContent = "这一天暂无日程";
+    list.appendChild(empty);
+  } else {
+    items.forEach((schedule) => list.appendChild(buildScheduleRow(schedule)));
+  }
+
+  $("#schedule-day-add").onclick = () => {
+    closeScheduleDayModal();
+    openScheduleForm(day);
+  };
+  $("#schedule-day-modal").hidden = false;
+}
+
+function appendDetailLine(label, value) {
+  const row = document.createElement("div");
+  row.className = "schedule-detail-line";
+  const labelEl = document.createElement("span");
+  labelEl.className = "schedule-detail-label";
+  labelEl.textContent = label;
+  const valueEl = document.createElement("span");
+  valueEl.className = "schedule-detail-value";
+  valueEl.textContent = value || "无";
+  row.appendChild(labelEl);
+  row.appendChild(valueEl);
+  $("#schedule-detail-body").appendChild(row);
+  return valueEl;
+}
+
+function openScheduleDetail(schedule) {
+  scheduleDetailData = schedule;
+  $("#schedule-detail-title").textContent = schedule.title;
+  $("#schedule-detail-color").style.background = schedule.effective_color || "#5b8def";
+
+  const body = $("#schedule-detail-body");
+  body.innerHTML = "";
+  appendDetailLine("类型", schedule.schedule_type);
+  appendDetailLine("开始", schedule.start_time?.replace("T", " "));
+  appendDetailLine("结束", schedule.end_time ? schedule.end_time.replace("T", " ") : "无");
+  appendDetailLine("地点", schedule.location);
+  appendDetailLine("关联笔记", schedule.note_title);
+
+  const descRow = document.createElement("div");
+  descRow.className = "schedule-detail-line schedule-description-row";
+  const descLabel = document.createElement("span");
+  descLabel.className = "schedule-detail-label";
+  descLabel.textContent = "行程详情";
+  const descValue = document.createElement("div");
+  descValue.className = "schedule-detail-value schedule-description";
+  descValue.textContent = schedule.description || "无";
+  descRow.appendChild(descLabel);
+  descRow.appendChild(descValue);
+  body.appendChild(descRow);
+
+  $("#schedule-detail-modal").hidden = false;
+}
+
+async function loadScheduleNoteOptions() {
+  const select = $("#schedule-form-note");
+  const current = select.value;
+  try {
+    const body = await fetchJson("/api/notes?size=500");
+    select.innerHTML = '<option value="">不关联</option>';
+    (body.data.items || []).forEach((note) => {
+      const option = document.createElement("option");
+      option.value = note.id;
+      option.textContent = note.title || `笔记 ${note.id}`;
+      select.appendChild(option);
+    });
+    select.value = current;
+  } catch (_) {
+    select.innerHTML = '<option value="">不关联</option>';
+  }
+}
+
+function resetScheduleForm(day = null) {
+  editingScheduleId = null;
+  const base = day ? new Date(day) : new Date();
+  if (day) {
+    base.setHours(9, 0, 0, 0);
+  } else {
+    base.setMinutes(0, 0, 0);
+    base.setHours(base.getHours() + 1);
+  }
+
+  $("#schedule-form-modal-title").textContent = "新增日程";
+  $("#schedule-form-title").value = "";
+  $("#schedule-form-type").value = "日常";
+  $("#schedule-form-start").value = toDateTimeLocalValue(base);
+  $("#schedule-form-end").value = "";
+  $("#schedule-form-location").value = "";
+  $("#schedule-form-description").value = "";
+  $("#schedule-form-note").value = "";
+  $("#schedule-form-color").value = SCHEDULE_TYPE_COLORS["日常"];
+  $("#schedule-form-error").hidden = true;
+}
+
+function openScheduleForm(day = null) {
+  resetScheduleForm(day);
+  $("#schedule-form-modal").hidden = false;
+  $("#schedule-form-title").focus();
+}
+
+function editCurrentSchedule() {
+  if (!scheduleDetailData) return;
+  const schedule = scheduleDetailData;
+  resetScheduleForm(null);
+  editingScheduleId = schedule.id;
+  $("#schedule-form-modal-title").textContent = "编辑日程";
+  $("#schedule-form-title").value = schedule.title || "";
+  $("#schedule-form-type").value = schedule.schedule_type;
+  $("#schedule-form-start").value = schedule.start_time || "";
+  $("#schedule-form-end").value = schedule.end_time || "";
+  $("#schedule-form-location").value = schedule.location || "";
+  $("#schedule-form-description").value = schedule.description || "";
+  $("#schedule-form-note").value = schedule.note_id ? String(schedule.note_id) : "";
+  $("#schedule-form-color").value = schedule.effective_color || SCHEDULE_TYPE_COLORS[schedule.schedule_type];
+  closeScheduleDetailModal();
+  $("#schedule-form-modal").hidden = false;
+}
+
+async function saveScheduleForm() {
+  const errorBox = $("#schedule-form-error");
+  errorBox.hidden = true;
+
+  const payload = {
+    title: $("#schedule-form-title").value.trim(),
+    schedule_type: $("#schedule-form-type").value,
+    start_time: $("#schedule-form-start").value,
+    end_time: $("#schedule-form-end").value || null,
+    location: $("#schedule-form-location").value.trim(),
+    description: $("#schedule-form-description").value.trim(),
+    note_id: $("#schedule-form-note").value ? Number($("#schedule-form-note").value) : null,
+    color: $("#schedule-form-color").value,
+  };
+
+  if (!payload.title) {
+    errorBox.textContent = "日程标题不能为空";
+    errorBox.hidden = false;
+    return;
+  }
+  if (!payload.start_time) {
+    errorBox.textContent = "开始时间不能为空";
+    errorBox.hidden = false;
+    return;
+  }
+  if (payload.end_time && payload.end_time <= payload.start_time) {
+    errorBox.textContent = "结束时间必须晚于开始时间";
+    errorBox.hidden = false;
+    return;
+  }
+
+  const url = editingScheduleId ? `/api/schedules/${editingScheduleId}` : "/api/schedules";
+  const method = editingScheduleId ? "PUT" : "POST";
+
+  try {
+    const body = await fetchJson(url, {
+      method,
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    toast(body.message, "success");
+    const start = new Date(body.data.start_time);
+    calendarState = {year: start.getFullYear(), month: start.getMonth() + 1};
+    closeScheduleForm();
+    await loadCalendarMonth();
+    loadHomeSchedules();
+    loadStats();
+  } catch (err) {
+    errorBox.textContent = err.message || "日程保存失败";
+    errorBox.hidden = false;
+  }
+}
+
+async function deleteCurrentSchedule() {
+  if (!scheduleDetailData) return;
+  const schedule = scheduleDetailData;
+  if (!confirm(`确定删除日程“${schedule.title}”吗？`)) return;
+
+  await fetchJson(`/api/schedules/${schedule.id}`, {method: "DELETE"});
+  closeScheduleDetailModal();
+  toast("日程已删除", "success");
+  await loadCalendarMonth();
+  loadHomeSchedules();
+  loadStats();
+}
+
+function activateCalendarTab() {
+  $$(".nav-btn").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === "calendar");
+  });
+  $$(".tab").forEach((section) => {
+    section.classList.toggle("active", section.dataset.tab === "calendar");
+  });
+}
+
+async function openScheduleFromAnywhere(schedule) {
+  const start = new Date(schedule.start_time);
+  calendarState = {year: start.getFullYear(), month: start.getMonth() + 1};
+  activateCalendarTab();
+  await loadCalendarMonth();
+  openScheduleDetail(schedule);
+}
+
+async function loadHomeSchedules() {
+  const box = $("#home-today-schedules");
+  if (!box) return;
+  box.innerHTML = "";
+
+  try {
+    const body = await fetchJson("/api/schedules/today");
+    const schedules = body.data || [];
+    if (!schedules.length) {
+      const empty = document.createElement("div");
+      empty.className = "home-schedule-empty";
+      empty.textContent = "今天暂无日程";
+      box.appendChild(empty);
+      return;
+    }
+
+    schedules.forEach((schedule) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "home-schedule-row";
+      row.style.setProperty("--schedule-color", schedule.effective_color || "#5b8def");
+      row.innerHTML = `
+        <span class="home-schedule-time">${escapeHtml(schedule.start_time?.slice(11, 16) || "--:--")}</span>
+        <span class="home-schedule-title">${escapeHtml(schedule.title)}</span>
+      `;
+      row.addEventListener("click", () => openScheduleFromAnywhere(schedule));
+      box.appendChild(row);
+    });
+  } catch (_) {
+    const empty = document.createElement("div");
+    empty.className = "home-schedule-empty";
+    empty.textContent = "今日日程加载失败";
+    box.appendChild(empty);
+  }
+}
+
+function closeScheduleDayModal() {
+  $("#schedule-day-modal").hidden = true;
+}
+
+function closeScheduleDetailModal() {
+  $("#schedule-detail-modal").hidden = true;
+  scheduleDetailData = null;
+}
+
+function closeScheduleForm() {
+  $("#schedule-form-modal").hidden = true;
+  editingScheduleId = null;
+}
+
+function shiftCalendarMonth(delta) {
+  const date = new Date(calendarState.year, calendarState.month - 1 + delta, 1);
+  calendarState = {year: date.getFullYear(), month: date.getMonth() + 1};
+  loadCalendarMonth();
+}
+
+function bindCalendarPage() {
+  $("#btn-prev-month").addEventListener("click", () => shiftCalendarMonth(-1));
+  $("#btn-next-month").addEventListener("click", () => shiftCalendarMonth(1));
+  $("#btn-add-schedule").addEventListener("click", () => openScheduleForm());
+  $("#schedule-day-close").addEventListener("click", closeScheduleDayModal);
+  $("#schedule-detail-close").addEventListener("click", closeScheduleDetailModal);
+  $("#schedule-form-close").addEventListener("click", closeScheduleForm);
+  $("#schedule-form-cancel").addEventListener("click", closeScheduleForm);
+  $("#btn-save-schedule").addEventListener("click", saveScheduleForm);
+  $("#btn-edit-schedule").addEventListener("click", editCurrentSchedule);
+  $("#btn-delete-schedule").addEventListener("click", deleteCurrentSchedule);
+
+  $("#schedule-form-type").addEventListener("change", (event) => {
+    $("#schedule-form-color").value = SCHEDULE_TYPE_COLORS[event.target.value] || "#5b8def";
+  });
+
+  $("#schedule-day-modal").addEventListener("click", (event) => {
+    if (event.target.id === "schedule-day-modal") closeScheduleDayModal();
+  });
+  $("#schedule-detail-modal").addEventListener("click", (event) => {
+    if (event.target.id === "schedule-detail-modal") closeScheduleDetailModal();
+  });
+  $("#schedule-form-modal").addEventListener("click", (event) => {
+    if (event.target.id === "schedule-form-modal") closeScheduleForm();
+  });
+}
+
 /* ============ 按钮波纹 ============ */
 function bindRipple() {
   $$(".btn").forEach((btn) => {
@@ -2371,6 +2845,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindQaPage();
   bindTaskCenter();
   bindTaskPage();
+  bindCalendarPage();
   bindRipple();
   loadStats();
   loadRecentNotes();
@@ -2380,4 +2855,6 @@ document.addEventListener("DOMContentLoaded", () => {
   loadVectorStats();
   loadTaskNoteOptions();
   loadHomeTaskPanels();
+  loadScheduleNoteOptions();
+  loadHomeSchedules();
 });

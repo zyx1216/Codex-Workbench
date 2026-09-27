@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ORM 模型：notes、rss_sources、pending_items、fetch_logs、async_tasks、tasks。
+ORM 模型：notes、rss_sources、pending_items、fetch_logs、async_tasks、tasks、schedules。
 JSON 字段统一用 Text 存 JSON 字符串，不依赖 SQLite 原生 JSON 类型。
 """
 
@@ -142,3 +142,26 @@ class Task(Base):
     note_id = Column(Integer, nullable=True, comment="关联笔记 ID")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     completed_at = Column(DateTime, nullable=True, comment="完成时间")
+
+
+class Schedule(Base):
+    """日程计划表。"""
+
+    __tablename__ = "schedules"
+    __table_args__ = (
+        CheckConstraint(
+            "schedule_type IN ('日常', '旅行', '工作', '其他')",
+            name="ck_schedules_type",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(200), nullable=False, comment="日程标题")
+    schedule_type = Column(String(20), nullable=False, default="日常", comment="日程类型")
+    start_time = Column(DateTime, nullable=False, comment="开始时间")
+    end_time = Column(DateTime, nullable=True, comment="结束时间")
+    location = Column(String(200), nullable=True, comment="地点")
+    description = Column(Text, nullable=True, comment="备注或行程详情")
+    note_id = Column(Integer, nullable=True, comment="关联笔记 ID")
+    color = Column(String(20), nullable=False, default="#5b8def", comment="日历颜色")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)

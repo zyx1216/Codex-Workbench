@@ -15,6 +15,7 @@
       <button class="nav-btn active" data-tab="home">首页</button>
       <button class="nav-btn" data-tab="notes">笔记库</button>
       <button class="nav-btn" data-tab="tasks">任务</button>
+      <button class="nav-btn" data-tab="calendar">日历</button>
       <button class="nav-btn" data-tab="feed">订阅</button>
       <button class="nav-btn" data-tab="qa">AI 助手</button>
       <button class="nav-btn" data-tab="async-tasks">后台任务</button>
@@ -51,6 +52,10 @@
           <div class="stat-label">已完成任务</div>
           <div class="stat-value counter cyan" data-target="0">0</div>
         </div>
+        <div class="card glass stat">
+          <div class="stat-label">今日日程</div>
+          <div class="stat-value counter cyan" data-target="0">0</div>
+        </div>
       </div>
 
       <div class="home-task-grid">
@@ -63,6 +68,11 @@
           <div id="home-upcoming-tasks" class="home-task-list"></div>
         </section>
       </div>
+
+      <section class="home-schedule-panel">
+        <h2 class="section-title">今日日程</h2>
+        <div id="home-today-schedules" class="home-schedule-list"></div>
+      </section>
 
       <h2 class="section-title">最近笔记</h2>
       <div class="card glass empty" id="recent-notes">
@@ -173,6 +183,24 @@
 
         <p class="hint">助手会先调用工具再总结；删除类操作不会由 AI 直接执行。</p>
       </div>
+    </section>
+
+    <!-- 日历：本版只做月视图 -->
+    <section class="tab" data-tab="calendar">
+      <h2 class="section-title gradient-text">日历</h2>
+
+      <div class="card glass calendar-toolbar">
+        <button class="btn btn-ghost" id="btn-prev-month" type="button">← 上月</button>
+        <h3 class="calendar-month-title" id="calendar-month-title">日历</h3>
+        <button class="btn btn-ghost" id="btn-next-month" type="button">下月 →</button>
+        <button class="btn btn-primary" id="btn-add-schedule" type="button">＋ 新增日程</button>
+      </div>
+
+      <div class="calendar-weekdays">
+        <span>周一</span><span>周二</span><span>周三</span><span>周四</span>
+        <span>周五</span><span>周六</span><span>周日</span>
+      </div>
+      <div id="calendar-grid" class="calendar-grid"></div>
     </section>
 
     <!-- 日常/工作任务 -->
@@ -355,6 +383,88 @@
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-save-edit">💾 保存</button>
         <button class="btn btn-ghost" id="btn-cancel-edit">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日期日程列表弹窗 -->
+  <div class="modal-mask" id="schedule-day-modal" hidden>
+    <div class="modal glass schedule-day-card">
+      <button class="modal-close" id="schedule-day-close" title="关闭">×</button>
+      <h3 class="modal-title" id="schedule-day-title">当天日程</h3>
+      <div id="schedule-day-list" class="schedule-day-list"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="schedule-day-add" type="button">新增日程</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日程详情弹窗 -->
+  <div class="modal-mask" id="schedule-detail-modal" hidden>
+    <div class="modal glass schedule-detail-card">
+      <button class="modal-close" id="schedule-detail-close" title="关闭">×</button>
+      <h3 class="modal-title" id="schedule-detail-title">日程详情</h3>
+      <div class="schedule-detail-color" id="schedule-detail-color"></div>
+      <div class="schedule-detail-body" id="schedule-detail-body"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-edit-schedule" type="button">编辑</button>
+        <button class="btn btn-ghost danger-text" id="btn-delete-schedule" type="button">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日程新增/编辑弹窗 -->
+  <div class="modal-mask" id="schedule-form-modal" hidden>
+    <div class="modal glass schedule-form-card">
+      <button class="modal-close" id="schedule-form-close" title="关闭">×</button>
+      <h3 class="modal-title" id="schedule-form-modal-title">新增日程</h3>
+
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input type="text" id="schedule-form-title" class="input" placeholder="日程标题" />
+      </label>
+      <label class="field">
+        <span class="field-label">类型</span>
+        <select id="schedule-form-type" class="input">
+          <option value="日常">日常</option>
+          <option value="旅行">旅行</option>
+          <option value="工作">工作</option>
+          <option value="其他">其他</option>
+        </select>
+      </label>
+      <div class="schedule-form-row">
+        <label class="field">
+          <span class="field-label">开始时间</span>
+          <input type="datetime-local" id="schedule-form-start" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">结束时间</span>
+          <input type="datetime-local" id="schedule-form-end" class="input" />
+        </label>
+      </div>
+      <label class="field">
+        <span class="field-label">地点</span>
+        <input type="text" id="schedule-form-location" class="input" />
+      </label>
+      <label class="field">
+        <span class="field-label">备注 / 行程详情</span>
+        <textarea id="schedule-form-description" class="input textarea" rows="5"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">关联笔记</span>
+        <select id="schedule-form-note" class="input">
+          <option value="">不关联</option>
+        </select>
+      </label>
+      <label class="field color-field">
+        <span class="field-label">颜色</span>
+        <input type="color" id="schedule-form-color" value="#06b6d4" />
+      </label>
+
+      <div class="modal-error" id="schedule-form-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-schedule" type="button">保存</button>
+        <button class="btn btn-ghost" id="schedule-form-cancel" type="button">取消</button>
       </div>
     </div>
   </div>

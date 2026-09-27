@@ -18,7 +18,7 @@ AI_CONFIG_PATH = DATA_DIR / "ai_config.json"
 SCHEDULER_CONFIG_PATH = DATA_DIR / "scheduler_config.json"
 
 APP_NAME = "知识消化平台"
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 
 
 def ensure_dirs() -> None:
