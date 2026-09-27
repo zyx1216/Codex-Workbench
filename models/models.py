@@ -21,6 +21,10 @@ class Note(Base):
             "quality_score IS NULL OR (quality_score >= 1 AND quality_score <= 5)",
             name="ck_notes_quality_score",
         ),
+        CheckConstraint(
+            "note_type IN ('普通', '会议')",
+            name="ck_notes_note_type",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -37,6 +41,10 @@ class Note(Base):
     )
     quality_score = Column(Float, nullable=True, comment="AI 改写质量评分")
     category = Column(String(50), nullable=False, default="默认", comment="分类")
+    note_type = Column(String(10), nullable=False, default="普通", comment="笔记类型：普通/会议")
+    meeting_time = Column(DateTime, nullable=True, comment="会议时间")
+    meeting_attendees = Column(String(500), nullable=True, comment="参会人，逗号分隔")
+    meeting_topic = Column(String(300), nullable=True, comment="会议主题")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
@@ -98,7 +106,7 @@ class AsyncTask(Base):
     __table_args__ = (
         CheckConstraint(
             "task_type IN ('rewrite_url', 'rewrite_text', 'batch_process', "
-            "'evaluate', 'regenerate')",
+            "'evaluate', 'regenerate', 'organize_meeting')",
             name="ck_async_tasks_type",
         ),
         CheckConstraint(

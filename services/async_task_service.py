@@ -23,6 +23,7 @@ VALID_TASK_TYPES = {
     "batch_process",
     "evaluate",
     "regenerate",
+    "organize_meeting",
 }
 
 
@@ -259,6 +260,8 @@ def _execute_task(task_id: int) -> None:
             result = run_batch_process(task_id, params)
         elif task_type == "evaluate":
             result = run_evaluate(task_id, params)
+        elif task_type == "organize_meeting":
+            result = run_organize_meeting(task_id, params)
         else:
             result = run_regenerate(task_id, params)
         _finish_success(task_id, result)
@@ -505,3 +508,20 @@ def run_regenerate(task_id: int, params: dict[str, Any]) -> dict[str, Any]:
 
     _update_running(task_id, 100, "重新生成完成")
     return result
+
+def run_organize_meeting(task_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    """AI 整理会议纪要任务；命中缓存直接复用，不调用 AI，且不写库。"""
+    from services import ai_service
+
+    raw_text = str(params.get("raw_text") or "")
+    cache_key = cache_service.make_organize_meeting_key(raw_text)
+    cached = cache_service.get_cache(cache_key)
+    if cached is not None:
+        _update_running(task_id, 90, "命中缓存，整理完成")
+        return cached
+
+    _update_running(task_id, 30, "正在调用 AI 整理…")
+    organized = ai_service.organize_meeting(raw_text)
+    _update_running(task_id, 90, "整理完成")
+    cache_service.set_cache(cache_key, organized)
+    return organized

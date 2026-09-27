@@ -374,11 +374,14 @@ async function fillCategoryFilter() {
 
 let searchMode = "keyword";
 
+let noteTypeFilter = "";
+
 function currentFilters() {
   return {
     keyword: $("#notes-search").value.trim(),
     tag: $("#notes-tag-filter").value,
     category: $("#notes-category-filter").value,
+    note_type: noteTypeFilter,
   };
 }
 
@@ -395,9 +398,18 @@ function setSearchMode(mode) {
 function bindNotesFilters() {
   $("#notes-tag-filter").addEventListener("change", loadNotes);
   $("#notes-category-filter").addEventListener("change", loadNotes);
-  $$(".segmented-btn").forEach((btn) => {
+  $$("#search-mode .segmented-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       setSearchMode(btn.dataset.mode);
+      loadNotes();
+    });
+  });
+  $$("#notes-type-mode .segmented-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      noteTypeFilter = btn.dataset.noteType || "";
+      $$("#notes-type-mode .segmented-btn").forEach((b) => {
+        b.classList.toggle("active", b === btn);
+      });
       loadNotes();
     });
   });
@@ -422,6 +434,7 @@ async function loadNotes() {
       if (f.keyword) params.set("keyword", f.keyword);
       if (f.tag) params.set("tag", f.tag);
       if (f.category) params.set("category", f.category);
+      if (f.note_type) params.set("note_type", f.note_type);
       const query = params.toString() ? `?${params.toString()}` : "";
       const res = await fetchJson(`/api/notes${query}`);
       items = res.data.items || [];
@@ -463,12 +476,14 @@ function buildNoteCard(note) {
   // 卡片头部：标题、分类、来源、时间；点头部展开
   const head = document.createElement("div");
   head.className = "note-head";
+  card.classList.toggle("meeting-note", note.note_type === "会议");
   head.innerHTML = `
     <div class="note-title">${escapeHtml(note.title || "无标题")}</div>
     <div class="note-meta">
       <span class="note-category">📁 ${escapeHtml(note.category || "默认")}</span>
       <span class="note-source">${escapeHtml(note.source || "手动输入")}</span>
       <span class="note-time">${formatTime(note.created_at)}</span>
+      ${note.note_type === "会议" ? `<span class="meeting-flag">📅 ${escapeHtml(note.meeting_time ? note.meeting_time.replace("T", " ") : "会议")}</span>` : ""}
     </div>`;
   head.appendChild(buildQualityBadge(note));
   if (note.score !== undefined) {
@@ -505,6 +520,55 @@ function buildNoteCard(note) {
   qualityRow.className = "note-quality-row";
   qualityRow.appendChild(buildQualityBadge(note, true));
   detail.appendChild(qualityRow);
+
+  if (note.note_type === "会议") {
+    const meetingBox = document.createElement("div");
+    meetingBox.className = "meeting-detail-box";
+    meetingBox.innerHTML = `
+      <div class="meeting-detail-topic">${escapeHtml(note.meeting_topic || note.title)}</div>
+      <div class="meeting-detail-meta">
+        <span>🕒 ${escapeHtml(note.meeting_time ? note.meeting_time.replace("T", " ") : "未定时间")}</span>
+        <span>👥 ${escapeHtml((note.attendee_list || []).join("、") || "参会人未记录")}</span>
+      </div>`;
+
+    if (note.meeting_todos && note.meeting_todos.length) {
+      const todoBox = document.createElement("div");
+      todoBox.className = "meeting-detail-todos";
+      todoBox.innerHTML = `<div class="meeting-detail-todos-title">后续待办</div>`;
+      note.meeting_todos.forEach((todo, index) => {
+        const row = document.createElement("div");
+        row.className = "meeting-detail-todo-row";
+        row.innerHTML = `
+          <span class="todo-text">${escapeHtml(todo.content)}</span>
+          <span class="todo-assignee">${escapeHtml(todo.assignee ? "负责人：" + todo.assignee : "")}</span>`;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-ghost btn-sm todo-create-btn";
+        btn.textContent = "创建任务";
+        btn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          btn.disabled = true;
+          try {
+            const titleText = todo.assignee ? `[${todo.assignee}] ${todo.content}` : todo.content;
+            await fetchJson("/api/tasks", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({title: titleText, category: "工作", note_id: note.id}),
+            });
+            btn.textContent = "已创建";
+            toast("已加入任务管理", "success");
+          } catch (err) {
+            btn.disabled = false;
+            toast(err.message || "创建任务失败", "error");
+          }
+        });
+        row.appendChild(btn);
+        todoBox.appendChild(row);
+      });
+      meetingBox.appendChild(todoBox);
+    }
+    detail.appendChild(meetingBox);
+  }
 
   const relatedSection = document.createElement("div");
   relatedSection.className = "related-section";
@@ -2831,6 +2895,198 @@ function bindRipple() {
   });
 }
 
+/* ============ v2.7 会议记录弹窗 ============ */
+let meetingOrganizedData = null;
+let stopMeetingPolling = null;
+
+function setMeetingPane(tab) {
+  $$("#meeting-tabs .segmented-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.meetingTab === tab);
+  });
+  $$("[data-meeting-pane]").forEach((pane) => {
+    pane.hidden = pane.dataset.meetingPane !== tab;
+  });
+}
+
+function resetMeetingModal() {
+  meetingOrganizedData = null;
+  if (stopMeetingPolling) { stopMeetingPolling(); stopMeetingPolling = null; }
+  $("#meeting-raw-text").value = "";
+  $("#meeting-organized").hidden = true;
+  $("#meeting-todo-pick").hidden = true;
+  $("#meeting-save-organized-row").hidden = true;
+  $("#btn-organize-meeting").disabled = false;
+  $("#btn-organize-meeting").textContent = "AI 整理";
+  $("#meeting-manual-title").value = "";
+  $("#meeting-manual-time").value = "";
+  $("#meeting-manual-attendees").value = "";
+  $("#meeting-manual-topic").value = "";
+  $("#meeting-manual-content").value = "";
+  $("#meeting-manual-error").hidden = true;
+  setMeetingPane("ai");
+}
+
+function openMeetingModal() {
+  resetMeetingModal();
+  $("#meeting-modal").hidden = false;
+}
+
+function renderMeetingOrganized(data) {
+  meetingOrganizedData = data;
+  const box = $("#meeting-organized");
+  const todos = data.todos || [];
+  box.innerHTML = `
+    <div class="org-line"><b>主题：</b>${escapeHtml(data.topic || "未识别")}</div>
+    <div class="org-line"><b>时间：</b>${escapeHtml(data.meeting_time || "未记录")}</div>
+    <div class="org-line"><b>参会人：</b>${escapeHtml(data.attendees || "未记录")}</div>
+    <div class="org-block"><b>议题讨论</b><div>${escapeHtml(data.discussion || "无")}</div></div>
+    <div class="org-block"><b>决议事项</b>
+      <ul>${(data.decisions || []).map((d) => `<li>${escapeHtml(d)}</li>`).join("") || "<li>无</li>"}</ul>
+    </div>`;
+  box.hidden = false;
+
+  const pick = $("#meeting-todo-pick");
+  const list = $("#meeting-todo-list");
+  list.innerHTML = "";
+  if (todos.length) {
+    todos.forEach((todo, index) => {
+      const label = document.createElement("label");
+      label.className = "meeting-todo-item";
+      label.innerHTML = `
+        <input type="checkbox" data-todo-index="${index}" />
+        <span>${escapeHtml(todo.content)}</span>
+        <span class="todo-assignee">${escapeHtml(todo.assignee ? "负责人：" + todo.assignee : "")}</span>`;
+      list.appendChild(label);
+    });
+    pick.hidden = false;
+    $("#meeting-todo-all").checked = false;
+  } else {
+    pick.hidden = true;
+  }
+  $("#meeting-save-organized-row").hidden = false;
+}
+
+function selectedMeetingTodos() {
+  return $$("#meeting-todo-list input[type=checkbox]:checked").map((input) => Number(input.dataset.todoIndex));
+}
+
+async function organizeCurrentMeeting() {
+  const rawText = $("#meeting-raw-text").value.trim();
+  const btn = $("#btn-organize-meeting");
+  if (!rawText) { toast("请粘贴会议记录内容", "error"); return; }
+  if (stopMeetingPolling) { stopMeetingPolling(); stopMeetingPolling = null; }
+  btn.disabled = true;
+  btn.textContent = "正在创建任务…";
+  $("#meeting-organized").hidden = true;
+  try {
+    const res = await fetchJson("/api/notes/meeting/organize", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({raw_text: rawText}),
+    });
+    stopMeetingPolling = startTaskPolling(res.data.task_id, {
+      onProgress: (task) => { btn.textContent = task.progress_message || "正在整理…"; },
+      onSuccess: (task) => {
+        btn.disabled = false;
+        btn.textContent = "AI 整理";
+        renderMeetingOrganized(task.result);
+        toast("会议整理完成", "success");
+      },
+      onFailed: (task) => {
+        btn.disabled = false;
+        btn.textContent = "AI 整理";
+        toast(task.error || "整理失败", "error");
+      },
+      onError: () => {
+        btn.disabled = false;
+        btn.textContent = "AI 整理";
+      },
+    });
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "AI 整理";
+    toast(err.message || "整理任务创建失败", "error");
+  }
+}
+
+async function saveOrganizedMeeting() {
+  if (!meetingOrganizedData) return;
+  const btn = $("#btn-save-organized");
+  btn.disabled = true;
+  try {
+    const res = await fetchJson("/api/notes", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        organized: meetingOrganizedData,
+        selected_todos: selectedMeetingTodos(),
+      }),
+    });
+    $("#meeting-modal").hidden = true;
+    toast(res.message, "success");
+    loadNotes();
+    loadStats();
+  } catch (err) {
+    toast(err.message || "保存失败", "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveManualMeeting() {
+  const errorBox = $("#meeting-manual-error");
+  errorBox.hidden = true;
+  const payload = {
+    title: $("#meeting-manual-title").value.trim(),
+    meeting_time: $("#meeting-manual-time").value || null,
+    attendees: $("#meeting-manual-attendees").value.trim(),
+    topic: $("#meeting-manual-topic").value.trim(),
+    content: $("#meeting-manual-content").value.trim(),
+  };
+  if (!payload.content) {
+    errorBox.textContent = "请填写会议内容";
+    errorBox.hidden = false;
+    return;
+  }
+  const btn = $("#btn-save-manual-meeting");
+  btn.disabled = true;
+  try {
+    const res = await fetchJson("/api/notes/meeting", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    $("#meeting-modal").hidden = true;
+    toast(res.message, "success");
+    loadNotes();
+    loadStats();
+  } catch (err) {
+    errorBox.textContent = err.message || "保存失败";
+    errorBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function bindMeetingModal() {
+  $("#btn-add-meeting").addEventListener("click", openMeetingModal);
+  $("#meeting-close").addEventListener("click", () => { $("#meeting-modal").hidden = true; });
+  $$("#meeting-tabs .segmented-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setMeetingPane(btn.dataset.meetingTab));
+  });
+  $("#btn-organize-meeting").addEventListener("click", organizeCurrentMeeting);
+  $("#btn-save-organized").addEventListener("click", saveOrganizedMeeting);
+  $("#btn-save-manual-meeting").addEventListener("click", saveManualMeeting);
+  $("#meeting-todo-all").addEventListener("change", (event) => {
+    $$("#meeting-todo-list input[type=checkbox]").forEach((input) => {
+      input.checked = event.target.checked;
+    });
+  });
+  $("#meeting-modal").addEventListener("click", (event) => {
+    if (event.target.id === "meeting-modal") $("#meeting-modal").hidden = true;
+  });
+}
+
 /* ============ 启动 ============ */
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
@@ -2846,6 +3102,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTaskCenter();
   bindTaskPage();
   bindCalendarPage();
+  bindMeetingModal();
   bindRipple();
   loadStats();
   loadRecentNotes();

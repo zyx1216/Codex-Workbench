@@ -85,15 +85,27 @@ class NoteCreateRequest(BaseModel):
     tags: list[str] = []
     source: str = "手动输入"
     category: str = "默认"
+    # v2.7 会议字段
+    note_type: str = "普通"
+    meeting_time: str | None = None
+    meeting_attendees: str | None = None
+    meeting_topic: str | None = None
+    # AI 整理结果（保存整理纪要时传）和勾选要转任务的待办索引
+    organized: dict[str, Any] | None = None
+    selected_todos: list[int] = []
 
 
 class NoteUpdateRequest(BaseModel):
-    """笔记更新请求体：标题、正文、标签、分类。"""
+    """笔记更新请求体：标题、正文、标签、分类及会议字段。"""
 
     title: str = ""
     content: str = ""
     tags: list[str] = []
     category: str = "默认"
+    note_type: str | None = None
+    meeting_time: str | None = None
+    meeting_attendees: str | None = None
+    meeting_topic: str | None = None
 
 
 class RssSourceRequest(BaseModel):
@@ -316,20 +328,36 @@ async def upload_file(file: UploadFile = File(...)):
 # ============ 笔记 CRUD ============
 @app.post("/api/notes")
 def create_note(payload: NoteCreateRequest, db: Session = Depends(get_db)):
-    """保存预览确认后的笔记；向量失败时保留笔记并返回警告。"""
-    note = note_service.create_note(
-        session=db,
-        title=payload.title,
-        content=payload.content,
-        original_url=payload.original_url,
-        tags=payload.tags,
-        source=payload.source,
-        category=payload.category,
-    )
+    """保存笔记；传 organized 时按 AI 整理结果存为会议记录并按勾选待办创建任务。"""
+    task_info = None
+    if payload.organized is not None:
+        note, task_info = note_service.save_organized_meeting(
+            db, payload.organized, selected_todos=set(payload.selected_todos)
+        )
+    else:
+        note = note_service.create_note(
+            session=db,
+            title=payload.title,
+            content=payload.content,
+            original_url=payload.original_url,
+            tags=payload.tags,
+            source=payload.source,
+            category=payload.category,
+            note_type=payload.note_type,
+            meeting_time=payload.meeting_time,
+            meeting_attendees=payload.meeting_attendees,
+            meeting_topic=payload.meeting_topic,
+        )
     data = note_service.serialize_note(note)
-    message = "笔记已保存"
+    if task_info is not None:
+        data["task_count"] = task_info["task_count"]
+        if task_info["warnings"]:
+            data["task_warnings"] = task_info["warnings"]
+    message = "会议记录已保存" if payload.organized is not None else "笔记已保存"
+    if task_info is not None and task_info["task_count"]:
+        message += f"，已创建 {task_info['task_count']} 条任务"
     if data.get("vector_warning"):
-        message = f"笔记已保存，但向量索引失败，可稍后手动同步"
+        message += "，但向量索引失败，可稍后手动同步"
     return ok(data, message=message)
 
 
@@ -338,13 +366,14 @@ def list_notes(
     keyword: str = Query(default=""),
     tag: str = Query(default=""),
     category: str = Query(default=""),
+    note_type: str = Query(default=""),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """笔记列表：支持关键词、标签、分类过滤和分页。"""
+    """笔记列表：支持关键词、标签、分类、类型过滤和分页。"""
     items, total = note_service.list_notes(
-        db, keyword=keyword, tag=tag, category=category, page=page, size=size
+        db, keyword=keyword, tag=tag, category=category, note_type=note_type, page=page, size=size
     )
     return ok({
         "items": [note_service.serialize_note(note) for note in items],
@@ -353,6 +382,62 @@ def list_notes(
         "size": size,
     })
 
+
+# ============ 会议记录 ============
+class MeetingCreateRequest(BaseModel):
+    """手动创建会议记录请求体。"""
+
+    title: str = ""
+    content: str = ""
+    meeting_time: str | None = None
+    attendees: str | None = None
+    topic: str | None = None
+    tags: list[str] = []
+
+
+class MeetingOrganizeRequest(BaseModel):
+    """AI 整理会议纪要请求体。"""
+
+    raw_text: str
+
+
+@app.get("/api/notes/meetings")
+def get_meetings(db: Session = Depends(get_db)):
+    """返回全部会议记录。"""
+    items = note_service.get_meeting_notes(db)
+    return ok([note_service.serialize_note(item) for item in items])
+
+
+@app.post("/api/notes/meeting/organize")
+def organize_meeting_route(payload: MeetingOrganizeRequest):
+    """创建 AI 整理会议纪要后台任务，立即返回任务 ID。"""
+    if not str(payload.raw_text or "").strip():
+        return fail("请粘贴会议记录内容")
+    task_id = async_task_service.create_task(
+        "organize_meeting", {"raw_text": payload.raw_text}
+    )
+    return ok({"task_id": task_id}, message="会议整理任务已创建")
+
+
+@app.post("/api/notes/meeting")
+def create_meeting_route(payload: MeetingCreateRequest, db: Session = Depends(get_db)):
+    """手动创建会议记录。"""
+    content = str(payload.content or "").strip()
+    if not content:
+        return fail("请填写会议内容")
+    topic = str(payload.topic or "").strip()
+    note = note_service.create_note(
+        session=db,
+        title=payload.title or topic or "会议记录",
+        content=content,
+        tags=payload.tags,
+        source="会议记录",
+        note_type="会议",
+        meeting_time=payload.meeting_time,
+        meeting_attendees=payload.attendees,
+        meeting_topic=topic or None,
+    )
+    return ok(note_service.serialize_note(note), message="会议记录已创建")
 
 @app.get("/api/notes/{note_id}")
 def get_note(note_id: int, db: Session = Depends(get_db)):
@@ -442,6 +527,10 @@ def update_note(note_id: int, payload: NoteUpdateRequest, db: Session = Depends(
             content=payload.content,
             tags=payload.tags,
             category=payload.category,
+            note_type=payload.note_type if payload.note_type is not None else note_service._UNSET,
+            meeting_time=payload.meeting_time if payload.meeting_time is not None else note_service._UNSET,
+            meeting_attendees=payload.meeting_attendees if payload.meeting_attendees is not None else note_service._UNSET,
+            meeting_topic=payload.meeting_topic if payload.meeting_topic is not None else note_service._UNSET,
         )
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -32,6 +32,9 @@ _TAG_SPLIT = re.compile(r"[,，]")
 RELATED_SCORE_THRESHOLD = 0.5
 RELATED_LIMIT = 5
 
+# 更新会议字段用的哨兵：区分“未传入”和“显式清空”
+_UNSET = object()
+
 # 质量评估后台队列：单个线程串行处理，避免并发请求太多
 _quality_queue: queue.Queue[int] = queue.Queue()
 _quality_pending: set[int] = set()
@@ -40,6 +43,9 @@ _quality_worker_started = False
 
 # 当前进程内的评分理由缓存，不写数据库
 _quality_reasons: dict[int, str] = {}
+
+# 当前进程内的会议待办缓存：供详情逐条“创建任务”，重启后为空（正文仍保留待办文本）
+_meeting_todos: dict[int, list[dict[str, str]]] = {}
 
 
 class NoteNotFound(Exception):
@@ -59,6 +65,32 @@ def parse_tags(text: str) -> list[str]:
 def tags_to_text(tags: list[str]) -> str:
     """标签列表转逗号分隔字符串，用于编辑表单回填。"""
     return ", ".join(tags or [])
+
+def parse_meeting_time(value: Any) -> datetime | None:
+    """解析会议时间（datetime-local/ISO）；空值返回 None。"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    raw = str(value).strip()
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("会议时间格式不正确") from exc
+
+
+def normalize_attendees(value: Any) -> str | None:
+    """参会人按逗号切分去空白后再合并；空值返回 None。"""
+    if value in (None, ""):
+        return None
+    names = [part.strip() for part in re.split(r"[,，]", str(value))]
+    names = [name for name in names if name]
+    return ", ".join(names) if names else None
 
 
 def _note_tags(note: Note) -> list[str]:
@@ -148,9 +180,16 @@ def create_note(
     tags: list[str] | None = None,
     source: str = "手动输入",
     category: str = "默认",
+    note_type: str = "普通",
+    meeting_time: Any = None,
+    meeting_attendees: str | None = None,
+    meeting_topic: str | None = None,
     commit: bool = True,
 ) -> Note:
     """新建笔记。commit=False 时由调用方和其他改动一起提交。"""
+    note_type = (note_type or "普通").strip()
+    if note_type not in ("普通", "会议"):
+        raise ValueError("笔记类型只能是普通或会议")
     now = datetime.now()
     note = Note(
         title=(title or "").strip() or "无标题",
@@ -161,6 +200,10 @@ def create_note(
         related_ids="[]",
         quality_score=None,
         category=category or "默认",
+        note_type=note_type,
+        meeting_time=parse_meeting_time(meeting_time),
+        meeting_attendees=normalize_attendees(meeting_attendees),
+        meeting_topic=str(meeting_topic or "").strip() or None,
         created_at=now,
         updated_at=now,
     )
@@ -179,13 +222,15 @@ def list_notes(
     keyword: str = "",
     tag: str = "",
     category: str = "",
+    note_type: str = "",
     page: int = 1,
     size: int = 20,
 ) -> tuple[list[Note], int]:
-    """查询笔记，返回（当前页笔记列表, 总数）。"""
+    """查询笔记，返回（当前页笔记列表, 总数）。note_type 空串不过滤。"""
     keyword = (keyword or "").strip().lower()
     tag = (tag or "").strip()
     category = (category or "").strip()
+    note_type = (note_type or "").strip()
 
     all_notes = list(session.scalars(select(Note)).all())
 
@@ -197,6 +242,8 @@ def list_notes(
         if tag and tag not in _note_tags(note):
             return False
         if category and note.category != category:
+            return False
+        if note_type and note.note_type != note_type:
             return False
         return True
 
@@ -217,13 +264,29 @@ def update_note(
     content: str,
     tags: list[str],
     category: str,
+    note_type: Any = _UNSET,
+    meeting_time: Any = _UNSET,
+    meeting_attendees: Any = _UNSET,
+    meeting_topic: Any = _UNSET,
 ) -> Note:
-    """更新标题、正文、标签、分类，并刷新向量索引和关联。"""
+    """更新标题、正文、标签、分类及会议字段；会议字段未传保持原值。"""
     note = get_note_by_id(session, note_id)
     note.title = (title or "").strip() or "无标题"
     note.content = content or ""
     note.tags = json.dumps(clean_tag_list(tags), ensure_ascii=False)
     note.category = (category or "").strip() or "默认"
+    if note_type is not _UNSET:
+        value = str(note_type or "普通").strip()
+        if value not in ("普通", "会议"):
+            raise ValueError("笔记类型只能是普通或会议")
+        note.note_type = value
+    if meeting_time is not _UNSET:
+        note.meeting_time = parse_meeting_time(meeting_time)
+    if meeting_attendees is not _UNSET:
+        note.meeting_attendees = normalize_attendees(meeting_attendees)
+    if meeting_topic is not _UNSET:
+        value = str(meeting_topic or "").strip()
+        note.meeting_topic = value or None
     note.updated_at = datetime.now()
     session.commit()
     session.refresh(note)
@@ -297,6 +360,94 @@ def get_note_by_id(session: Any, note_id: int) -> Note:
     if note is None:
         raise NoteNotFound("笔记不存在或已被删除")
     return note
+
+
+def get_meeting_notes(session: Any) -> list[Note]:
+    """返回全部会议记录：会议时间倒序，无时间按创建时间倒序。"""
+    notes = [note for note in session.scalars(select(Note)).all() if note.note_type == "会议"]
+    notes.sort(key=lambda note: (note.meeting_time or note.created_at, note.id), reverse=True)
+    return notes
+
+
+def _build_meeting_content(organized: dict[str, Any]) -> str:
+    """把整理结果拼成结构化中文正文。"""
+    parts: list[str] = []
+    discussion = str(organized.get("discussion") or "").strip()
+    if discussion:
+        parts.append("【议题讨论】\n" + discussion)
+    decisions = organized.get("decisions") or []
+    if isinstance(decisions, list) and decisions:
+        lines = [f"{index}. {str(item).strip()}" for index, item in enumerate(decisions, start=1) if str(item).strip()]
+        if lines:
+            parts.append("【决议事项】\n" + "\n".join(lines))
+    todos = organized.get("todos") or []
+    if isinstance(todos, list) and todos:
+        lines = []
+        for index, todo in enumerate(todos, start=1):
+            if not isinstance(todo, dict):
+                continue
+            content = str(todo.get("content") or "").strip()
+            if not content:
+                continue
+            assignee = str(todo.get("assignee") or "").strip()
+            lines.append(f"{index}. {content}" + (f"（负责人：{assignee}）" if assignee else ""))
+        if lines:
+            parts.append("【后续待办】\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def save_organized_meeting(
+    session: Any,
+    organized: dict[str, Any],
+    create_tasks: bool = False,
+    selected_todos: set[int] | None = None,
+) -> tuple[Note, dict[str, Any]]:
+    """保存整理结果为会议笔记；勾选的待办可同时创建工作任务。"""
+    from services import task_service
+
+    topic = str(organized.get("topic") or "").strip()
+    attendees = str(organized.get("attendees") or "").strip()
+    meeting_time = organized.get("meeting_time") or None
+    content = _build_meeting_content(organized)
+    note = create_note(
+        session=session,
+        title=topic or "无标题会议纪要",
+        content=content,
+        tags=["会议纪要"],
+        source="会议记录",
+        note_type="会议",
+        meeting_time=meeting_time,
+        meeting_attendees=attendees,
+        meeting_topic=topic or None,
+    )
+
+    task_count = 0
+    warnings: list[str] = []
+    todos = organized.get("todos") if isinstance(organized.get("todos"), list) else []
+    for index, todo in enumerate(todos):
+        if not isinstance(todo, dict):
+            continue
+        if selected_todos is not None and index not in selected_todos:
+            continue
+        if selected_todos is None and not create_tasks:
+            continue
+        todo_content = str(todo.get("content") or "").strip()
+        if not todo_content:
+            continue
+        assignee = str(todo.get("assignee") or "").strip()
+        title_text = f"[{assignee}] {todo_content}" if assignee else todo_content
+        try:
+            task_service.create_task(session, title=title_text, category="工作", note_id=note.id)
+            task_count += 1
+        except task_service.TaskError as exc:
+            warnings.append(str(exc))
+            logger.warning("会议待办创建任务失败：%s", exc)
+
+    _meeting_todos[note.id] = [
+        {"content": str(todo.get("content") or "").strip(), "assignee": str(todo.get("assignee") or "").strip()}
+        for todo in todos if isinstance(todo, dict) and str(todo.get("content") or "").strip()
+    ]
+    return note, {"task_count": task_count, "warnings": warnings}
 
 
 def delete_note(session: Any, note_id: int) -> dict[str, str | bool]:
@@ -408,6 +559,9 @@ def regenerate_note(
 
 def serialize_note(note: Note) -> dict[str, Any]:
     """笔记转前端字典。"""
+    attendees = []
+    if note.meeting_attendees:
+        attendees = [name for name in (part.strip() for part in re.split(r"[,，]", note.meeting_attendees)) if name]
     return {
         "id": note.id,
         "title": note.title,
@@ -421,6 +575,12 @@ def serialize_note(note: Note) -> dict[str, Any]:
             note.id, "可重新评估获取详细理由"
         ),
         "category": note.category,
+        "note_type": note.note_type or "普通",
+        "meeting_time": note.meeting_time.isoformat(timespec="minutes") if note.meeting_time else None,
+        "meeting_attendees": note.meeting_attendees,
+        "attendee_list": attendees,
+        "meeting_topic": note.meeting_topic,
+        "meeting_todos": _meeting_todos.get(note.id, []),
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
         "vector_indexed": bool(getattr(note, "vector_indexed", True)),

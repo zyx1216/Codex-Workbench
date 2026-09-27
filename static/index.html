@@ -109,6 +109,14 @@
         <select id="notes-category-filter" class="input">
           <option value="">全部分类</option>
         </select>
+        <div class="segmented" id="notes-type-mode" role="group" aria-label="笔记类型">
+          <button type="button" class="segmented-btn active" data-note-type="">全部</button>
+          <button type="button" class="segmented-btn" data-note-type="普通">普通</button>
+          <button type="button" class="segmented-btn" data-note-type="会议">会议</button>
+        </div>
+      </div>
+      <div class="notes-actions">
+        <button class="btn btn-primary" id="btn-add-meeting" type="button">＋ 会议记录</button>
       </div>
       <div id="notes-list" class="notes-list"></div>
     </section>
@@ -358,6 +366,64 @@
   </div>
 
   <!-- 笔记编辑弹窗 -->
+  <!-- 会议记录弹窗：AI 整理 / 手动填写 两段 -->
+  <div class="modal-mask" id="meeting-modal" hidden>
+    <div class="modal glass meeting-modal-card">
+      <button class="modal-close" id="meeting-close" title="关闭">×</button>
+      <h3 class="modal-title">会议记录</h3>
+
+      <div class="segmented meeting-tabs" id="meeting-tabs" role="group" aria-label="会议录入方式">
+        <button type="button" class="segmented-btn active" data-meeting-tab="ai">AI 整理</button>
+        <button type="button" class="segmented-btn" data-meeting-tab="manual">手动填写</button>
+      </div>
+
+      <!-- AI 整理段 -->
+      <div class="meeting-pane" data-meeting-pane="ai">
+        <textarea id="meeting-raw-text" class="input textarea" rows="9" placeholder="粘贴原始会议记录…"></textarea>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-organize-meeting" type="button">AI 整理</button>
+        </div>
+        <div id="meeting-organized" class="meeting-organized" hidden></div>
+        <div class="meeting-todo-pick" id="meeting-todo-pick" hidden>
+          <label class="meeting-check-all">
+            <input type="checkbox" id="meeting-todo-all" /> <span>全选待办</span>
+          </label>
+          <div id="meeting-todo-list" class="meeting-todo-list"></div>
+        </div>
+        <div class="btn-row" id="meeting-save-organized-row" hidden>
+          <button class="btn btn-primary" id="btn-save-organized" type="button">保存为会议记录</button>
+        </div>
+      </div>
+
+      <!-- 手动填写段 -->
+      <div class="meeting-pane" data-meeting-pane="manual" hidden>
+        <label class="field">
+          <span class="field-label">标题</span>
+          <input type="text" id="meeting-manual-title" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">会议时间</span>
+          <input type="datetime-local" id="meeting-manual-time" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">参会人（逗号分隔）</span>
+          <input type="text" id="meeting-manual-attendees" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">会议主题</span>
+          <input type="text" id="meeting-manual-topic" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">正文</span>
+          <textarea id="meeting-manual-content" class="input textarea" rows="8"></textarea>
+        </label>
+        <div class="modal-error" id="meeting-manual-error" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-manual-meeting" type="button">保存为会议记录</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="modal-mask" id="edit-modal" hidden>
     <div class="modal glass">
       <button class="modal-close" id="edit-modal-close" title="关闭">×</button>

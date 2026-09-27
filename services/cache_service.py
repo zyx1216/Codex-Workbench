@@ -41,6 +41,10 @@ def make_regenerate_key(note_id: int, style: str, content: str) -> str:
     """风格重生成缓存键。"""
     return f"regenerate|{note_id}|{style}|{content or ''}"
 
+def make_organize_meeting_key(raw_text: str) -> str:
+    """会议整理缓存键，只取原始记录前 2000 字。"""
+    return f"organize_meeting|{(raw_text or '')[:2000]}"
+
 
 def get_cache(key: str) -> Any:
     """读取缓存；过期、损坏或不存在时返回 None。"""

@@ -65,6 +65,16 @@ QUALITY_PROMPT = (
     "笔记标题：{title}\n\n笔记内容：{content}"
 )
 
+# 会议整理提示词：强制输出固定结构的 JSON，缺的信息留空、禁止编造
+ORGANIZE_MEETING_PROMPT = (
+    "请把下面的原始会议记录整理成结构化会议纪要。只输出 JSON，不要输出 Markdown 或解释。"
+    "JSON 格式为："
+    '{{"topic": "会议主题", "attendees": "参会人，逗号分隔", "meeting_time": "YYYY-MM-DD HH:MM 或留空", '
+    '"discussion": "议题讨论内容", "decisions": ["决议1"], "todos": [{{"content": "待办内容", "assignee": "负责人或留空"}}]}}'
+    "要求：1.原文没有的信息留空，禁止编造；2.discussion 用条理清晰的中文概述；"
+    "3.待办尽量写明负责人；4.所有内容使用中文。\n\n原始记录：{raw_text}"
+)
+
 # 风格重写的系统提示词，键名固定为前端三种选项
 STYLE_SYSTEM_PROMPTS = {
     "通俗": (
@@ -266,3 +276,50 @@ def rewrite_with_style(title: str, content: str, style: str) -> str:
         f"标题：{title or '无标题'}\n\n正文：{content}"
     )
     return chat(prompt, system_prompt=system_prompt)
+
+def organize_meeting(raw_text: str) -> dict[str, Any]:
+    """把原始会议记录交给 AI 整理成结构化纪要。"""
+    raw_text = str(raw_text or "").strip()
+    if not raw_text:
+        raise AiError("请粘贴会议记录内容")
+    # 超长内容截断，保护模型上下文
+    raw_text = raw_text[:6000]
+    raw = chat(ORGANIZE_MEETING_PROMPT.format(raw_text=raw_text))
+    cleaned = re.sub(
+        r"^```(?:json)?|```$",
+        "",
+        raw.strip(),
+        flags=re.MULTILINE,
+    ).strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise AiError("会议整理结果格式错误，请重试") from exc
+    if not isinstance(payload, dict):
+        raise AiError("会议整理结果格式错误，请重试")
+
+    def clean_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    decisions = payload.get("decisions")
+    todos = payload.get("todos")
+    result = {
+        "topic": clean_text(payload.get("topic")),
+        "attendees": clean_text(payload.get("attendees")),
+        "meeting_time": clean_text(payload.get("meeting_time")),
+        "discussion": clean_text(payload.get("discussion")),
+        "decisions": decisions if isinstance(decisions, list) else [],
+        "todos": [],
+    }
+    if isinstance(todos, list):
+        for todo in todos:
+            if not isinstance(todo, dict):
+                continue
+            content = clean_text(todo.get("content"))
+            if not content:
+                continue
+            result["todos"].append({
+                "content": content,
+                "assignee": clean_text(todo.get("assignee")),
+            })
+    return result
