@@ -45,6 +45,13 @@ def make_organize_meeting_key(raw_text: str) -> str:
     """会议整理缓存键，只取原始记录前 2000 字。"""
     return f"organize_meeting|{(raw_text or '')[:2000]}"
 
+def make_relevance_key(title: str, content: str, focus_topics: str) -> str:
+    """相关性判断缓存键；正文只取前 500 字。"""
+    return (
+        f"relevance|{(focus_topics or '').strip()}|"
+        f"{title or ''}|{(content or '')[:500]}"
+    )
+
 
 def get_cache(key: str) -> Any:
     """读取缓存；过期、损坏或不存在时返回 None。"""

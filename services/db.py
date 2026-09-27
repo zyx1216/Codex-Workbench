@@ -143,6 +143,90 @@ def _rebuild_async_tasks_if_needed() -> None:
         ))
 
 
+# pending_items 新表结构：状态增加 filtered（SQLite 不能直接改 CHECK，只能整表重建）
+_PENDING_ITEMS_NEW_DDL = """
+CREATE TABLE pending_items__new (
+    id INTEGER NOT NULL,
+    url VARCHAR(500) NOT NULL,
+    title VARCHAR(500),
+    source VARCHAR(50),
+    status VARCHAR(20) NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT ck_pending_items_status CHECK (status IN (
+        'pending', 'processing', 'done', 'skipped', 'filtered'
+    ))
+)
+"""
+
+
+def _ensure_rss_columns() -> None:
+    """给旧版数据库补 rss_sources、fetch_logs 的 v2.8 字段；过程幂等。"""
+    inspector = inspect(engine)
+    table_columns = {
+        table: {column["name"] for column in inspector.get_columns(table)}
+        for table in ("rss_sources", "fetch_logs")
+        if table in set(inspector.get_table_names())
+    }
+
+    rss_existing = table_columns.get("rss_sources", set())
+    log_existing = table_columns.get("fetch_logs", set())
+
+    with engine.begin() as connection:
+        # RSS 源三个字段：布尔列给固定默认值
+        if "focus_topics" not in rss_existing:
+            connection.execute(text(
+                "ALTER TABLE rss_sources ADD COLUMN focus_topics VARCHAR(500)"
+            ))
+        if "auto_process" not in rss_existing:
+            connection.execute(text(
+                "ALTER TABLE rss_sources ADD COLUMN auto_process BOOLEAN "
+                "NOT NULL DEFAULT 0"
+            ))
+        if "ai_filter_enabled" not in rss_existing:
+            connection.execute(text(
+                "ALTER TABLE rss_sources ADD COLUMN ai_filter_enabled BOOLEAN "
+                "NOT NULL DEFAULT 1"
+            ))
+        # 抓取日志两个计数
+        if "filtered_count" not in log_existing:
+            connection.execute(text(
+                "ALTER TABLE fetch_logs ADD COLUMN filtered_count INTEGER "
+                "NOT NULL DEFAULT 0"
+            ))
+        if "auto_saved_count" not in log_existing:
+            connection.execute(text(
+                "ALTER TABLE fetch_logs ADD COLUMN auto_saved_count INTEGER "
+                "NOT NULL DEFAULT 0"
+            ))
+
+
+def _rebuild_pending_items_if_needed() -> None:
+    """旧 pending_items 的状态约束缺少 filtered 时整表重建；过程幂等。"""
+    inspector = inspect(engine)
+    if "pending_items" not in set(inspector.get_table_names()):
+        return
+
+    with engine.connect() as connection:
+        ddl = connection.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='pending_items'"
+        )).scalar() or ""
+    if "filtered" in ddl:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text(_PENDING_ITEMS_NEW_DDL))
+        connection.execute(text(
+            "INSERT INTO pending_items__new ("
+            "id, url, title, source, status, created_at) "
+            "SELECT id, url, title, source, status, created_at FROM pending_items"
+        ))
+        connection.execute(text("DROP TABLE pending_items"))
+        connection.execute(text(
+            "ALTER TABLE pending_items__new RENAME TO pending_items"
+        ))
+
+
 def init_db() -> None:
     """创建数据目录和所有数据表（幂等）。"""
     config.ensure_dirs()
@@ -150,6 +234,8 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_notes_columns()
     _rebuild_async_tasks_if_needed()
+    _ensure_rss_columns()
+    _rebuild_pending_items_if_needed()
 
 
 def get_db():

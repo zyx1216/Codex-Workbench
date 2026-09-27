@@ -58,6 +58,13 @@ class RssSource(Base):
     name = Column(String(200), nullable=False, comment="源名称")
     url = Column(String(500), nullable=False, comment="RSS 地址")
     last_fetched = Column(DateTime, nullable=True, comment="最后抓取时间")
+    focus_topics = Column(String(500), nullable=True, comment="关注主题，逗号分隔")
+    auto_process = Column(
+        Boolean, nullable=False, default=False, comment="相关内容是否直接改写存笔记"
+    )
+    ai_filter_enabled = Column(
+        Boolean, nullable=False, default=True, comment="是否开启 AI 相关性筛选"
+    )
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 
@@ -67,7 +74,7 @@ class PendingItem(Base):
     __tablename__ = "pending_items"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'processing', 'done', 'skipped')",
+            "status IN ('pending', 'processing', 'done', 'skipped', 'filtered')",
             name="ck_pending_items_status",
         ),
     )
@@ -96,6 +103,8 @@ class FetchLog(Base):
     status = Column(String(20), nullable=False, comment="执行状态")
     message = Column(String(500), nullable=False, default="", comment="结果信息")
     new_count = Column(Integer, nullable=False, default=0, comment="新增待处理条数")
+    filtered_count = Column(Integer, nullable=False, default=0, comment="AI 筛掉条数")
+    auto_saved_count = Column(Integer, nullable=False, default=0, comment="自动保存条数")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 

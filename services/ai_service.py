@@ -75,6 +75,16 @@ ORGANIZE_MEETING_PROMPT = (
     "3.待办尽量写明负责人；4.所有内容使用中文。\n\n原始记录：{raw_text}"
 )
 
+# 相关性筛选提示词：强制只输出 JSON，便于程序判定
+RELEVANCE_PROMPT = (
+    "请判断下面这篇文章是否与给定的关注主题相关。只输出 JSON，不要输出其他内容。"
+    "JSON 格式为："
+    '{{"relevant": true, "reason": "不超过50字的简短原因"}}\n'
+    "关注主题：{focus_topics}\n"
+    "文章标题：{title}\n"
+    "文章摘要：{content}"
+)
+
 # 风格重写的系统提示词，键名固定为前端三种选项
 STYLE_SYSTEM_PROMPTS = {
     "通俗": (
@@ -323,3 +333,39 @@ def organize_meeting(raw_text: str) -> dict[str, Any]:
                 "assignee": clean_text(todo.get("assignee")),
             })
     return result
+
+def is_relevant(title: str, content: str, focus_topics: str) -> dict[str, Any]:
+    """判断文章是否与关注主题相关；任何 AI/解析失败都默认相关，避免漏内容。"""
+    focus_topics = str(focus_topics or "").strip()
+    if not focus_topics:
+        # 没有主题不做筛选，调用方本不该走到这里
+        return {"relevant": True, "reason": "未设置关注主题，默认相关"}
+
+    try:
+        raw = chat(RELEVANCE_PROMPT.format(
+            focus_topics=focus_topics,
+            title=str(title or "无标题"),
+            content=str(content or "")[:500],
+        ))
+    except AiError as exc:
+        logger.warning("相关性 AI 调用失败，默认按相关处理：%s", exc)
+        return {"relevant": True, "reason": "AI判断失败，默认按相关处理"}
+
+    cleaned = re.sub(
+        r"^```(?:json)?|```$",
+        "",
+        raw.strip(),
+        flags=re.MULTILINE,
+    ).strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        logger.warning("相关性结果解析失败，默认按相关处理：%s", exc)
+        return {"relevant": True, "reason": "AI判断失败，默认按相关处理"}
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("relevant"), bool):
+        logger.warning("相关性结果格式错误，默认按相关处理")
+        return {"relevant": True, "reason": "AI判断失败，默认按相关处理"}
+
+    reason = str(payload.get("reason") or "").strip()[:100]
+    return {"relevant": payload["relevant"], "reason": reason or "AI 未说明原因"}

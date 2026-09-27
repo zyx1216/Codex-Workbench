@@ -2376,3 +2376,116 @@ input[type="color"] {
 .meeting-detail-todo-row .todo-text { min-width: 0; }
 
 .todo-create-btn { margin-left: auto; flex: none; }
+
+/* ============================================================
+   v2.8 RSS 智能筛选样式
+   ============================================================ */
+
+.feed-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.feed-head-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.feed-tip { margin: 8px 0 0; }
+
+.rss-modal-card { max-width: 560px; }
+
+.source-topic {
+  color: var(--primary);
+}
+
+.badge-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  margin-right: 6px;
+  border: 1px solid transparent;
+}
+
+.badge-pill.on {
+  color: #06b6d4;
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.35);
+}
+
+.badge-pill.on.warn {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.badge-pill.off {
+  color: var(--text-muted);
+  background: rgba(148, 163, 184, 0.10);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+/* 开关样式 */
+.switch-row { margin: 4px 0; }
+
+.switch-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-field input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-ui {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  transition: background 0.2s ease;
+  flex: none;
+}
+
+.switch-ui::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.switch-field input:checked + .switch-ui {
+  background: var(--primary);
+}
+
+.switch-field input:checked + .switch-ui::after {
+  transform: translateX(18px);
+}
+
+.switch-label {
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.rss-risk-hint {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}

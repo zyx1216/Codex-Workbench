@@ -109,10 +109,20 @@ class NoteUpdateRequest(BaseModel):
 
 
 class RssSourceRequest(BaseModel):
-    """RSS 源添加请求体。"""
+    """RSS 源添加/更新请求体。"""
 
     name: str = ""
     url: str = ""
+    focus_topics: str | None = None
+    auto_process: bool = False
+    ai_filter_enabled: bool = True
+
+
+class FilterTestRequest(BaseModel):
+    """测试 AI 筛选请求体。"""
+
+    title: str = ""
+    content: str = ""
 
 
 class NoteRegenerateRequest(BaseModel):
@@ -554,10 +564,51 @@ def get_rss_sources(db: Session = Depends(get_db)):
 def post_rss_source(payload: RssSourceRequest, db: Session = Depends(get_db)):
     """验证并添加 RSS 源。"""
     try:
-        source = rss_service.add_source(db, payload.name, payload.url)
+        source = rss_service.add_source(
+            db,
+            payload.name,
+            payload.url,
+            focus_topics=payload.focus_topics,
+            auto_process=payload.auto_process,
+            ai_filter_enabled=payload.ai_filter_enabled,
+        )
     except rss_service.RssError as exc:
         return fail(str(exc))
     return ok(rss_service.serialize_source(source), message="RSS 源已添加")
+
+
+@app.put("/api/rss-sources/{source_id}")
+def put_rss_source(source_id: int, payload: RssSourceRequest, db: Session = Depends(get_db)):
+    """更新 RSS 源名称和三个筛选配置。"""
+    try:
+        source = rss_service.update_source(
+            db,
+            source_id,
+            name=payload.name,
+            focus_topics=payload.focus_topics,
+            auto_process=payload.auto_process,
+            ai_filter_enabled=payload.ai_filter_enabled,
+        )
+    except rss_service.RssSourceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except rss_service.RssError as exc:
+        return fail(str(exc))
+    return ok(rss_service.serialize_source(source), message="RSS 源已更新")
+
+
+@app.post("/api/rss-sources/{source_id}/test-filter")
+def test_rss_filter(source_id: int, payload: FilterTestRequest, db: Session = Depends(get_db)):
+    """用该源自身的关注主题测试一条内容的 AI 判定结果。"""
+    try:
+        source = rss_service.get_source_by_id(db, source_id)
+    except rss_service.RssSourceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    topics = (source.focus_topics or "").strip()
+    if not topics:
+        return fail("这个 RSS 源还没有填写关注主题")
+    result = ai_service.is_relevant(payload.title, payload.content, topics)
+    return ok(result)
 
 
 @app.delete("/api/rss-sources/{source_id}")
@@ -574,12 +625,18 @@ def delete_rss_source(source_id: int, db: Session = Depends(get_db)):
 def fetch_rss_source(source_id: int, db: Session = Depends(get_db)):
     """手动抓取单个 RSS 源。"""
     try:
-        added = rss_service.fetch_source(db, source_id)
+        stats = rss_service.fetch_source(db, source_id)
     except rss_service.RssSourceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except rss_service.RssError as exc:
         return fail(str(exc))
-    return ok({"added": added}, message=f"抓取完成，新增 {added} 条")
+    message = (
+        f"本次发现 {stats['added']} 条，"
+        f"相关进入待处理 {stats['pending_count']} 条，"
+        f"自动保存 {stats['auto_saved_count']} 条，"
+        f"筛选掉 {stats['filtered_count']} 条"
+    )
+    return ok(stats, message=message)
 
 
 @app.post("/api/rss/fetch-all")

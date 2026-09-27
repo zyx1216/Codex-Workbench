@@ -127,15 +127,14 @@
       <h2 class="section-title gradient-text">RSS 订阅</h2>
 
       <div class="card glass form-card">
-        <h3 class="block-title">添加 RSS 源</h3>
-        <div class="feed-form">
-          <input type="text" id="rss-name" class="input" placeholder="源名称，如：技术博客" />
-          <input type="text" id="rss-url" class="input" placeholder="RSS 地址" />
-          <button class="btn btn-primary" id="btn-add-rss">添加</button>
+        <div class="feed-head-row">
+          <h3 class="block-title">RSS 源管理</h3>
+          <div class="feed-head-actions">
+            <button class="btn btn-primary btn-sm" id="btn-add-rss" type="button">＋ 添加源</button>
+            <button class="btn btn-ghost btn-sm" id="btn-fetch-all-rss" type="button">全部抓取</button>
+          </div>
         </div>
-        <div class="btn-row section-actions">
-          <button class="btn btn-ghost" id="btn-fetch-all-rss">全部抓取</button>
-        </div>
+        <p class="hint feed-tip">填写关注主题后，抓取时会由 AI 自动筛掉不相关内容；不填主题则全部进入待处理队列。</p>
       </div>
 
       <h2 class="section-title">RSS 源</h2>
@@ -366,6 +365,49 @@
   </div>
 
   <!-- 笔记编辑弹窗 -->
+  <!-- RSS 源新增/编辑弹窗 -->
+  <div class="modal-mask" id="rss-modal" hidden>
+    <div class="modal glass rss-modal-card">
+      <button class="modal-close" id="rss-modal-close" title="关闭">×</button>
+      <h3 class="modal-title" id="rss-modal-title">添加 RSS 源</h3>
+
+      <label class="field">
+        <span class="field-label">源名称</span>
+        <input type="text" id="rss-form-name" class="input" placeholder="如：技术博客" />
+      </label>
+      <label class="field">
+        <span class="field-label">RSS 地址</span>
+        <input type="text" id="rss-form-url" class="input" placeholder="https://example.com/feed.xml" />
+      </label>
+      <label class="field">
+        <span class="field-label">关注主题（逗号分隔）</span>
+        <input type="text" id="rss-form-topics" class="input"
+               placeholder="比如：Agent开发,大模型,机器学习，逗号分隔" />
+      </label>
+
+      <div class="switch-row">
+        <label class="switch-field">
+          <input type="checkbox" id="rss-form-ai-filter" checked />
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span class="switch-label">开启 AI 相关性筛选</span>
+        </label>
+      </div>
+      <div class="switch-row">
+        <label class="switch-field">
+          <input type="checkbox" id="rss-form-auto" />
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span class="switch-label">开启自动处理</span>
+        </label>
+      </div>
+
+      <div class="modal-error" id="rss-modal-error" hidden></div>
+      <p class="hint rss-risk-hint">关注主题为空时不筛选；开启自动处理后，相关内容将直接改写存笔记，不会经过手动确认。</p>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-rss" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 会议记录弹窗：AI 整理 / 手动填写 两段 -->
   <div class="modal-mask" id="meeting-modal" hidden>
     <div class="modal glass meeting-modal-card">

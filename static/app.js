@@ -1014,23 +1014,88 @@ function bindUploadModal() {
 /* ============ v1.4：RSS 订阅 ============ */
 let processedPreview = null;
 
-async function addRssSource() {
-  const nameBox = $("#rss-name");
-  const urlBox = $("#rss-url");
-  const name = nameBox.value.trim();
-  const url = urlBox.value.trim();
+/* RSS 源新增/编辑弹窗状态 */
+let rssEditingId = null;
+
+function collectRssForm() {
+  return {
+    name: $("#rss-form-name").value.trim(),
+    url: $("#rss-form-url").value.trim(),
+    focus_topics: $("#rss-form-topics").value.trim(),
+    auto_process: $("#rss-form-auto").checked,
+    ai_filter_enabled: $("#rss-form-ai-filter").checked,
+  };
+}
+
+function resetRssModal() {
+  rssEditingId = null;
+  $("#rss-modal-title").textContent = "添加 RSS 源";
+  $("#rss-form-name").value = "";
+  $("#rss-form-url").value = "";
+  $("#rss-form-topics").value = "";
+  $("#rss-form-ai-filter").checked = true;
+  $("#rss-form-auto").checked = false;
+  $("#rss-modal-error").hidden = true;
+}
+
+function openRssModal() {
+  resetRssModal();
+  $("#rss-modal").hidden = false;
+}
+
+function fillRssModal(source) {
+  rssEditingId = source.id;
+  $("#rss-modal-title").textContent = "编辑 RSS 源";
+  $("#rss-form-name").value = source.name || "";
+  $("#rss-form-url").value = source.url || "";
+  $("#rss-form-topics").value = source.focus_topics || "";
+  $("#rss-form-ai-filter").checked = !!source.ai_filter_enabled;
+  $("#rss-form-auto").checked = !!source.auto_process;
+  $("#rss-modal-error").hidden = true;
+}
+
+async function saveRssSource() {
+  const payload = collectRssForm();
+  const errorBox = $("#rss-modal-error");
+  errorBox.hidden = true;
+  if (!payload.name) {
+    errorBox.textContent = "请填写 RSS 源名称";
+    errorBox.hidden = false;
+    return;
+  }
+  if (!payload.url) {
+    errorBox.textContent = "请填写 RSS 地址";
+    errorBox.hidden = false;
+    return;
+  }
+
+  const btn = $("#btn-save-rss");
+  btn.disabled = true;
+  btn.textContent = "保存中…";
   try {
-    await fetchJson("/api/rss-sources", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, url }),
-    });
-    nameBox.value = "";
-    urlBox.value = "";
-    toast("RSS 源已添加", "success");
+    let res;
+    if (rssEditingId === null) {
+      res = await fetchJson("/api/rss-sources", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+    } else {
+      res = await fetchJson(`/api/rss-sources/${rssEditingId}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+    }
+    $("#rss-modal").hidden = true;
+    toast(res.message, "success");
     await loadRssSources();
   } catch (err) {
-    toast(err.message || "添加失败", "error");
+    errorBox.textContent = err.message || "保存失败";
+    errorBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "保存";
   }
 }
 
@@ -1041,7 +1106,7 @@ async function loadRssSources() {
     const res = await fetchJson("/api/rss-sources");
     const sources = res.data || [];
     if (!sources.length) {
-      box.appendChild(makeFeedEmpty("📡", "暂无 RSS 源，先添加一个订阅地址"));
+      box.appendChild(makeFeedEmpty("📡", "暂无 RSS 源，点上方按钮添加"));
       return;
     }
     sources.forEach((source) => box.appendChild(buildSourceCard(source)));
@@ -1056,10 +1121,18 @@ function buildSourceCard(source) {
 
   const head = document.createElement("div");
   head.className = "feed-item-head";
+  const topicText = source.focus_topics || "未设置，全部进待处理";
   head.innerHTML = `
     <div class="feed-item-main">
       <div class="feed-item-title">${escapeHtml(source.name)}</div>
       <div class="feed-item-url">${escapeHtml(source.url)}</div>
+      <div class="feed-item-meta">
+        <span class="source-topic">🎯 ${escapeHtml(topicText)}</span>
+        <span class="source-badges">
+          <span class="badge-pill ${source.ai_filter_enabled ? "on" : "off"}">AI筛选 ${source.ai_filter_enabled ? "开" : "关"}</span>
+          <span class="badge-pill ${source.auto_process ? "on warn" : "off"}">自动保存 ${source.auto_process ? "开" : "关"}</span>
+        </span>
+      </div>
       <div class="feed-item-meta">
         <span>最后抓取：${source.last_fetched ? formatTime(source.last_fetched) : "尚未抓取"}</span>
       </div>
@@ -1067,11 +1140,17 @@ function buildSourceCard(source) {
 
   const actions = document.createElement("div");
   actions.className = "feed-item-actions";
+  const editBtn = makeButton("btn btn-ghost btn-sm", "编辑");
   const fetchBtn = makeButton("btn btn-ghost btn-sm", "抓取");
   const deleteBtn = makeButton("btn btn-danger btn-sm", "删除");
-  actions.append(fetchBtn, deleteBtn);
+  actions.append(editBtn, fetchBtn, deleteBtn);
   head.appendChild(actions);
   card.appendChild(head);
+
+  editBtn.addEventListener("click", () => {
+    fillRssModal(source);
+    $("#rss-modal").hidden = false;
+  });
 
   fetchBtn.addEventListener("click", async () => {
     fetchBtn.disabled = true;
@@ -1110,15 +1189,23 @@ async function fetchAllRssSources() {
   try {
     const res = await fetchJson("/api/rss/fetch-all", { method: "POST" });
     const results = res.data || [];
-    const totalAdded = results.reduce((sum, item) => sum + (item.added || 0), 0);
+    const sum = {
+      added: results.reduce((s, i) => s + (i.added || 0), 0),
+      pending_count: results.reduce((s, i) => s + (i.pending_count || 0), 0),
+      auto_saved_count: results.reduce((s, i) => s + (i.auto_saved_count || 0), 0),
+      filtered_count: results.reduce((s, i) => s + (i.filtered_count || 0), 0),
+    };
     const failed = results.filter((item) => item.error);
+    let message = `本次发现 ${sum.added} 条，相关进入待处理 ${sum.pending_count} 条，自动保存 ${sum.auto_saved_count} 条，筛选掉 ${sum.filtered_count} 条`;
     if (failed.length) {
-      toast(`抓取完成：新增 ${totalAdded} 条，${failed.length} 个源失败`, "warning");
+      message += `，${failed.length} 个源失败`;
+      toast(message, "warning");
     } else {
-      toast(`全部抓取完成，新增 ${totalAdded} 条`, "success");
+      toast(message, "success");
     }
     await Promise.all([loadRssSources(), loadPendingItems(), loadStats()]);
   } catch (err) {
+
     toast(err.message || "全部抓取失败", "error");
   } finally {
     btn.disabled = false;
@@ -1289,8 +1376,15 @@ async function reprocessPreview() {
 }
 
 function bindFeedPage() {
-  $("#btn-add-rss").addEventListener("click", addRssSource);
+  $("#btn-add-rss").addEventListener("click", openRssModal);
   $("#btn-fetch-all-rss").addEventListener("click", fetchAllRssSources);
+  $("#btn-save-rss").addEventListener("click", saveRssSource);
+  $("#rss-modal-close").addEventListener("click", () => {
+    $("#rss-modal").hidden = true;
+  });
+  $("#rss-modal").addEventListener("click", (event) => {
+    if (event.target.id === "rss-modal") $("#rss-modal").hidden = true;
+  });
   $("#pending-select-all").addEventListener("change", toggleAllPendingChecks);
   $("#btn-batch-process").addEventListener("click", batchProcessSelected);
   $("#pending-modal-close").addEventListener("click", () => {

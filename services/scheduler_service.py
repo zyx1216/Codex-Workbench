@@ -123,6 +123,8 @@ def add_log(
     status: str,
     message: str,
     new_count: int = 0,
+    filtered_count: int = 0,
+    auto_saved_count: int = 0,
 ) -> None:
     """写入一条抓取日志；日志失败只记 logging，不影响抓取主流程。"""
     if status not in ("success", "failed", "running"):
@@ -134,6 +136,8 @@ def add_log(
                 status=status,
                 message=str(message or "")[:500],
                 new_count=max(int(new_count or 0), 0),
+                filtered_count=max(int(filtered_count or 0), 0),
+                auto_saved_count=max(int(auto_saved_count or 0), 0),
                 created_at=datetime.now(),
             ))
             session.commit()
@@ -149,6 +153,8 @@ def serialize_log(log: FetchLog) -> dict[str, Any]:
         "status": log.status,
         "message": log.message,
         "new_count": log.new_count,
+        "filtered_count": log.filtered_count,
+        "auto_saved_count": log.auto_saved_count,
         "created_at": log.created_at.isoformat() if log.created_at else None,
     }
 
@@ -235,17 +241,27 @@ def run_now() -> dict[str, Any]:
             add_log("全部", "failed", f"全部抓取失败：{exc}", 0)
             raise
 
-        total_added = sum(int(item.get("added", 0)) for item in results)
+        total = {
+            key: sum(int(item.get(key, 0)) for item in results)
+            for key in ("added", "pending_count", "auto_saved_count", "filtered_count")
+        }
         failed_count = sum(1 for item in results if item.get("error"))
         status = "failed" if failed_count else "success"
-        if failed_count:
-            message = f"全部抓取完成，新增 {total_added} 条，{failed_count} 个源失败"
-        else:
-            message = f"全部抓取完成，新增 {total_added} 条"
-        add_log("全部", status, message, total_added)
+        message = (
+            f"全部抓取完成，发现 {total['added']} 条，"
+            f"进入待处理 {total['pending_count']} 条，"
+            f"自动保存 {total['auto_saved_count']} 条，"
+            f"筛选掉 {total['filtered_count']} 条"
+            + (f"，{failed_count} 个源失败" if failed_count else "")
+        )
+        add_log(
+            "全部", status, message, total["pending_count"],
+            filtered_count=total["filtered_count"],
+            auto_saved_count=total["auto_saved_count"],
+        )
         return {
             "results": results,
-            "total_added": total_added,
+            "total_added": total["added"],
         }
     finally:
         _running_lock.release()
