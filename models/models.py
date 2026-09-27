@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-ORM 模型：notes、rss_sources、pending_items、fetch_logs、tasks。
+ORM 模型：notes、rss_sources、pending_items、fetch_logs、async_tasks、tasks。
 JSON 字段统一用 Text 存 JSON 字符串，不依赖 SQLite 原生 JSON 类型。
 """
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -91,23 +91,23 @@ class FetchLog(Base):
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 
-class Task(Base):
-    """异步任务表。"""
+class AsyncTask(Base):
+    """后台异步任务表。"""
 
-    __tablename__ = "tasks"
+    __tablename__ = "async_tasks"
     __table_args__ = (
         CheckConstraint(
             "task_type IN ('rewrite_url', 'rewrite_text', 'batch_process', "
             "'evaluate', 'regenerate')",
-            name="ck_tasks_type",
+            name="ck_async_tasks_type",
         ),
         CheckConstraint(
             "status IN ('pending', 'running', 'success', 'failed')",
-            name="ck_tasks_status",
+            name="ck_async_tasks_status",
         ),
         CheckConstraint(
             "progress >= 0 AND progress <= 100",
-            name="ck_tasks_progress",
+            name="ck_async_tasks_progress",
         ),
     )
 
@@ -121,3 +121,24 @@ class Task(Base):
     error = Column(Text, nullable=True, comment="错误信息")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
+class Task(Base):
+    """日常/工作任务表。"""
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint("category IN ('日常', '工作')", name="ck_tasks_category"),
+        CheckConstraint("priority IN ('高', '中', '低')", name="ck_tasks_priority"),
+        CheckConstraint("completed IN (0, 1)", name="ck_tasks_completed"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(200), nullable=False, comment="任务标题")
+    category = Column(String(20), nullable=False, default="日常", comment="任务分类")
+    priority = Column(String(10), nullable=False, default="中", comment="任务优先级")
+    due_date = Column(DateTime, nullable=True, comment="截止日期")
+    completed = Column(Boolean, nullable=False, default=False, comment="是否完成")
+    note_id = Column(Integer, nullable=True, comment="关联笔记 ID")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    completed_at = Column(DateTime, nullable=True, comment="完成时间")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-知识消化平台 v2.4 · FastAPI 主入口。
+知识消化平台 v2.5 · FastAPI 主入口。
 
 - 启动时初始化 SQLite、RSS 调度器，并在需要时后台同步向量库
 - 提供链接处理、文件上传、RSS、笔记管理、语义搜索、RAG 问答和 Agent 自然语言操作接口
@@ -30,6 +30,7 @@ from services import (
     rss_service,
     scheduler_service,
     task_service,
+    async_task_service,
     vector_service,
 )
 from services.db import get_db, init_db
@@ -42,7 +43,7 @@ async def lifespan(_app: FastAPI):
     scheduler_service.start_scheduler()
     # SQLite 有笔记但向量库为空时后台补齐，不阻塞 FastAPI 启动
     vector_service.start_startup_sync_if_needed()
-    task_service.start_worker()
+    async_task_service.start_worker()
     yield
     scheduler_service.stop_scheduler()
 
@@ -121,6 +122,26 @@ class BatchProcessRequest(BaseModel):
     item_ids: list[int] = []
 
 
+class TaskCreateRequest(BaseModel):
+    """日常/工作任务创建请求体。"""
+
+    title: str
+    category: str = "日常"
+    priority: str = "中"
+    due_date: str | None = None
+    note_id: int | None = None
+
+
+class TaskUpdateRequest(BaseModel):
+    """日常/工作任务更新请求体；未传字段保持原值。"""
+
+    title: str | None = None
+    category: str | None = None
+    priority: str | None = None
+    due_date: str | None = None
+    note_id: int | None = None
+
+
 class SchedulerConfigRequest(BaseModel):
     """定时抓取配置请求体。"""
 
@@ -167,8 +188,10 @@ def index() -> FileResponse:
 # ============ 首页统计与 AI 配置 ============
 @app.get("/api/stats")
 def get_stats(db: Session = Depends(get_db)):
-    """首页概览：真实统计数据。"""
-    return ok(note_service.get_stats(db))
+    """首页概览：笔记统计和任务统计。"""
+    data = note_service.get_stats(db)
+    data.update(task_service.get_stats(db))
+    return ok(data)
 
 
 @app.get("/api/ai-config")
@@ -215,8 +238,8 @@ def process_url(payload: ProcessUrlRequest):
         "content": payload.content,
     }
     try:
-        task_id = task_service.create_task(task_type, params)
-    except task_service.TaskError as exc:
+        task_id = async_task_service.create_task(task_type, params)
+    except async_task_service.AsyncTaskError as exc:
         return fail(str(exc))
     return ok({"task_id": task_id}, message="任务已创建，正在处理")
 
@@ -357,7 +380,7 @@ def evaluate_note(note_id: int, db: Session = Depends(get_db)):
         note_service.get_note_by_id(db, note_id)
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    task_id = task_service.create_task("evaluate", {"note_id": note_id})
+    task_id = async_task_service.create_task("evaluate", {"note_id": note_id})
     return ok({"task_id": task_id}, message="质量评估任务已创建")
 
 
@@ -374,7 +397,7 @@ def regenerate_note(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if payload.style not in ("通俗", "精简", "详细"):
         return fail("不支持的改写风格，只能选择通俗、精简或详细")
-    task_id = task_service.create_task(
+    task_id = async_task_service.create_task(
         "regenerate", {"note_id": note_id, "style": payload.style}
     )
     return ok({"task_id": task_id}, message="重新生成任务已创建")
@@ -516,21 +539,21 @@ def delete_pending(item_id: int, db: Session = Depends(get_db)):
     return ok(None, message="待处理项已删除")
 
 
-# ============ 任务中心、缓存和批量处理 ============
-@app.get("/api/tasks/{task_id}")
-def get_task(task_id: int):
-    """查询单个异步任务。"""
+# ============ 后台任务、缓存和批量处理 ============
+@app.get("/api/async-tasks/{task_id}")
+def get_async_task(task_id: int):
+    """查询单个后台异步任务。"""
     try:
-        task = task_service.get_task(task_id)
-    except task_service.TaskNotFound as exc:
+        task = async_task_service.get_task(task_id)
+    except async_task_service.AsyncTaskNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(task)
 
 
-@app.get("/api/tasks")
-def list_tasks(limit: int = Query(default=20, ge=1, le=100)):
-    """查询最近任务。"""
-    return ok(task_service.list_tasks(limit))
+@app.get("/api/async-tasks")
+def list_async_tasks(limit: int = Query(default=20, ge=1, le=100)):
+    """查询最近后台异步任务。"""
+    return ok(async_task_service.list_tasks(limit))
 
 
 @app.post("/api/cache/clear")
@@ -548,11 +571,113 @@ def batch_process_pending(payload: BatchProcessRequest):
         return fail("请先选择待处理内容")
     if len(item_ids) > 50:
         return fail("单次最多批量处理 50 条")
-    task_id = task_service.create_task(
+    task_id = async_task_service.create_task(
         "batch_process", {"item_ids": item_ids}
     )
     return ok({"task_id": task_id}, message="批量处理任务已创建")
 
+
+# ============ 日常/工作任务管理 ============
+@app.post("/api/tasks")
+def create_user_task(payload: TaskCreateRequest, db: Session = Depends(get_db)):
+    """创建日常或工作任务。"""
+    try:
+        task = task_service.create_task(
+            db,
+            payload.title,
+            payload.category,
+            payload.priority,
+            payload.due_date,
+            payload.note_id,
+        )
+    except task_service.TaskError as exc:
+        return fail(str(exc))
+    return ok(task_service.serialize_task(task), message="任务已创建")
+
+
+@app.get("/api/tasks/today")
+def get_today_user_tasks(db: Session = Depends(get_db)):
+    """获取今日待办。"""
+    items = task_service.get_today_tasks(db)
+    return ok([task_service.serialize_task(task) for task in items])
+
+
+@app.get("/api/tasks/stats")
+def get_user_task_stats(db: Session = Depends(get_db)):
+    """获取任务统计。"""
+    return ok(task_service.get_stats(db))
+
+
+@app.get("/api/tasks")
+def list_user_tasks(
+    category: str | None = None,
+    completed: bool | None = None,
+    db: Session = Depends(get_db),
+):
+    """查询任务列表，可按分类和完成状态筛选。"""
+    try:
+        items = task_service.list_tasks(db, category=category, completed=completed)
+    except task_service.TaskError as exc:
+        return fail(str(exc))
+    return ok([task_service.serialize_task(task) for task in items])
+
+
+@app.get("/api/tasks/{task_id}")
+def get_user_task(task_id: int, db: Session = Depends(get_db)):
+    """获取单个任务。"""
+    try:
+        task = task_service.get_task(db, task_id)
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(task_service.serialize_task(task))
+
+
+@app.put("/api/tasks/{task_id}")
+def update_user_task(
+    task_id: int,
+    payload: TaskUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """更新任务基础信息。"""
+    try:
+        task = task_service.update_task(
+            db, task_id, **payload.model_dump(exclude_unset=True)
+        )
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except task_service.TaskError as exc:
+        return fail(str(exc))
+    return ok(task_service.serialize_task(task), message="任务已更新")
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_user_task(task_id: int, db: Session = Depends(get_db)):
+    """删除任务。"""
+    try:
+        task_service.delete_task(db, task_id)
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(None, message="任务已删除")
+
+
+@app.post("/api/tasks/{task_id}/complete")
+def complete_user_task(task_id: int, db: Session = Depends(get_db)):
+    """标记任务完成。"""
+    try:
+        task = task_service.complete_task(db, task_id)
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(task_service.serialize_task(task), message="任务已完成")
+
+
+@app.post("/api/tasks/{task_id}/uncomplete")
+def uncomplete_user_task(task_id: int, db: Session = Depends(get_db)):
+    """取消任务完成状态。"""
+    try:
+        task = task_service.uncomplete_task(db, task_id)
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(task_service.serialize_task(task), message="已取消完成")
 
 
 # ============ 定时自动抓取 ============

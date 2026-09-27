@@ -28,9 +28,12 @@ function initTabs() {
       } else if (target === "home") {
         loadStats();
         loadRecentNotes();
+        loadHomeTaskPanels();
       } else if (target === "qa") {
         loadVectorStats();
       } else if (target === "tasks") {
+        loadUserTasks();
+      } else if (target === "async-tasks") {
         loadTaskList();
       }
     });
@@ -90,6 +93,10 @@ async function loadStats() {
   } catch (_) { /* 首页统计失败不打扰 */ }
 }
 
+/* ============ 日常/工作任务状态 ============ */
+let taskFilters = {category: "", completed: ""};
+let editingTaskId = null;
+
 /* ============ 链接 / 手动粘贴弹窗 ============ */
 let inputMode = "url";
 let lastProcessPayload = null; // 上次请求参数，重新生成时复用
@@ -131,7 +138,7 @@ function closeLinkModal() {
 }
 
 function pollTaskOnce(taskId) {
-  return fetchJson(`/api/tasks/${taskId}`);
+  return fetchJson(`/api/async-tasks/${taskId}`);
 }
 
 function startTaskPolling(taskId, handlers) {
@@ -1864,7 +1871,7 @@ async function evaluateNoteNow(note, button) {
 async function loadTaskList() {
   const box = $("#task-list");
   try {
-    const body = await fetchJson("/api/tasks?limit=30");
+    const body = await fetchJson("/api/async-tasks?limit=30");
     const tasks = body.data || [];
     renderTaskList(tasks);
     const active = tasks.some((task) => ["pending", "running"].includes(task.status));
@@ -1889,7 +1896,7 @@ function renderTaskList(tasks) {
   if (!tasks.length) {
     const empty = document.createElement("div");
     empty.className = "card glass empty";
-    empty.innerHTML = '<div class="empty-icon">📋</div><p>暂无任务</p>';
+    empty.innerHTML = '<div class="empty-icon">📋</div><p>暂无后台任务</p>';
     box.appendChild(empty);
     return;
   }
@@ -1965,6 +1972,295 @@ function bindTaskCenter() {
     } catch (err) {
       toast(err.message || "清空缓存失败", "error");
     }
+  });
+}
+
+/* ============ 日常/工作任务 ============ */
+async function loadTaskNoteOptions() {
+  const select = $("#task-form-note");
+  const current = select.value;
+  try {
+    const body = await fetchJson("/api/notes?size=200");
+    select.innerHTML = '<option value="">不关联</option>';
+    (body.data.items || []).forEach((note) => {
+      const option = document.createElement("option");
+      option.value = note.id;
+      option.textContent = note.title || `笔记 ${note.id}`;
+      select.appendChild(option);
+    });
+    select.value = current;
+  } catch (_) {
+    select.innerHTML = '<option value="">不关联</option>';
+  }
+}
+
+function resetTaskForm() {
+  editingTaskId = null;
+  $("#task-modal-title").textContent = "新增任务";
+  $("#task-form-title").value = "";
+  $("#task-form-category").value = "日常";
+  $("#task-form-priority").value = "中";
+  $("#task-form-due-date").value = "";
+  $("#task-form-note").value = "";
+  $("#task-modal-error").hidden = true;
+}
+
+function openTaskModal(task = null) {
+  resetTaskForm();
+  if (task) {
+    editingTaskId = task.id;
+    $("#task-modal-title").textContent = "编辑任务";
+    $("#task-form-title").value = task.title || "";
+    $("#task-form-category").value = task.category || "日常";
+    $("#task-form-priority").value = task.priority || "中";
+    $("#task-form-due-date").value = task.due_date || "";
+    $("#task-form-note").value = task.note_id ? String(task.note_id) : "";
+  }
+  $("#task-modal").hidden = false;
+  $("#task-form-title").focus();
+}
+
+function closeTaskModal() {
+  $("#task-modal").hidden = true;
+  editingTaskId = null;
+}
+
+async function saveTaskForm() {
+  const payload = {
+    title: $("#task-form-title").value.trim(),
+    category: $("#task-form-category").value,
+    priority: $("#task-form-priority").value,
+    due_date: $("#task-form-due-date").value || null,
+    note_id: $("#task-form-note").value ? Number($("#task-form-note").value) : null,
+  };
+  const errorBox = $("#task-modal-error");
+  errorBox.hidden = true;
+
+  if (!payload.title) {
+    errorBox.textContent = "任务标题不能为空";
+    errorBox.hidden = false;
+    return;
+  }
+
+  const url = editingTaskId ? `/api/tasks/${editingTaskId}` : "/api/tasks";
+  const method = editingTaskId ? "PUT" : "POST";
+  try {
+    const body = await fetchJson(url, {
+      method,
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    toast(body.message, "success");
+    closeTaskModal();
+    await loadUserTasks();
+    if ($(".tab.active")?.dataset.tab === "home") loadHomeTaskPanels();
+    loadStats();
+  } catch (err) {
+    errorBox.textContent = err.message || "任务保存失败";
+    errorBox.hidden = false;
+  }
+}
+
+async function loadUserTasks() {
+  const params = new URLSearchParams();
+  if (taskFilters.category) params.set("category", taskFilters.category);
+  if (taskFilters.completed !== "") params.set("completed", taskFilters.completed);
+  const url = `/api/tasks${params.toString() ? `?${params}` : ""}`;
+  try {
+    const body = await fetchJson(url);
+    renderUserTasks(body.data || []);
+  } catch (err) {
+    $("#user-task-list").innerHTML = "";
+    const empty = document.createElement("div");
+    empty.className = "card glass empty";
+    empty.textContent = `任务加载失败：${err.message}`;
+    $("#user-task-list").appendChild(empty);
+  }
+}
+
+function renderUserTasks(tasks) {
+  const box = $("#user-task-list");
+  box.innerHTML = "";
+  if (!tasks.length) {
+    const empty = document.createElement("div");
+    empty.className = "card glass empty";
+    empty.innerHTML = '<div class="empty-icon">🗒️</div><p>暂无任务，点下方按钮添加</p>';
+    box.appendChild(empty);
+    return;
+  }
+  tasks.forEach((task) => box.appendChild(buildUserTaskCard(task)));
+}
+
+function buildUserTaskCard(task) {
+  const card = document.createElement("div");
+  card.className = `card glass user-task-card ${task.completed ? "is-completed" : ""} ${task.is_overdue ? "is-overdue" : ""}`;
+
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "user-task-check";
+  check.checked = task.completed;
+  check.addEventListener("click", (event) => event.stopPropagation());
+  check.addEventListener("change", () => toggleTaskDone(task, check));
+  card.appendChild(check);
+
+  const main = document.createElement("div");
+  main.className = "user-task-main";
+
+  const title = document.createElement("div");
+  title.className = "user-task-title";
+  title.textContent = task.title;
+  main.appendChild(title);
+
+  const meta = document.createElement("div");
+  meta.className = "user-task-meta";
+  meta.innerHTML = `
+    <span class="todo-priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span>
+    <span class="todo-category">${escapeHtml(task.category)}</span>
+    <span class="todo-due ${task.is_overdue ? "overdue" : ""}">${task.due_date ? `📅 ${escapeHtml(task.due_date)}` : "无截止日期"}</span>
+    ${task.note_title ? `<span class="todo-note">📎 ${escapeHtml(task.note_title)}</span>` : ""}
+  `;
+  main.appendChild(meta);
+  card.appendChild(main);
+
+  const actions = document.createElement("div");
+  actions.className = "user-task-actions";
+  const editBtn = makeButton("icon-btn", "✏️");
+  editBtn.title = "编辑";
+  editBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openTaskModal(task);
+  });
+  const deleteBtn = makeButton("icon-btn danger", "🗑️");
+  deleteBtn.title = "删除";
+  deleteBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    if (!confirm(`确定删除任务“${task.title}”吗？`)) return;
+    try {
+      await fetchJson(`/api/tasks/${task.id}`, {method: "DELETE"});
+      toast("任务已删除", "success");
+      await loadUserTasks();
+      loadStats();
+      loadHomeTaskPanels();
+    } catch (err) {
+      toast(err.message || "删除失败", "error");
+    }
+  });
+  actions.appendChild(editBtn);
+  actions.appendChild(deleteBtn);
+  card.appendChild(actions);
+
+  return card;
+}
+
+async function toggleTaskDone(task, check) {
+  const action = check.checked ? "complete" : "uncomplete";
+  try {
+    await fetchJson(`/api/tasks/${task.id}/${action}`, {method: "POST"});
+    await loadUserTasks();
+    loadStats();
+    loadHomeTaskPanels();
+  } catch (err) {
+    check.checked = !check.checked;
+    toast(err.message || "操作失败", "error");
+  }
+}
+
+function renderSimpleTaskList(box, tasks, emptyText) {
+  box.innerHTML = "";
+  if (!tasks.length) {
+    const empty = document.createElement("div");
+    empty.className = "simple-task-empty";
+    empty.textContent = emptyText;
+    box.appendChild(empty);
+    return;
+  }
+
+  tasks.forEach((task) => {
+    const row = document.createElement("div");
+    row.className = `simple-task-row ${task.is_overdue ? "overdue" : ""}`;
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = false;
+    check.addEventListener("change", async () => {
+      try {
+        await fetchJson(`/api/tasks/${task.id}/complete`, {method: "POST"});
+        loadHomeTaskPanels();
+        loadStats();
+        if ($(".tab.active")?.dataset.tab === "tasks") loadUserTasks();
+      } catch (err) {
+        check.checked = false;
+        toast(err.message || "完成失败", "error");
+      }
+    });
+
+    const info = document.createElement("div");
+    info.className = "simple-task-info";
+    info.innerHTML = `
+      <span class="simple-task-title">${escapeHtml(task.title)}</span>
+      <span class="simple-task-meta">
+        <span class="todo-priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span>
+        <span class="${task.is_overdue ? "overdue" : ""}">${task.due_date ? escapeHtml(task.due_date) : ""}</span>
+      </span>
+    `;
+    row.appendChild(check);
+    row.appendChild(info);
+    box.appendChild(row);
+  });
+}
+
+async function loadHomeTaskPanels() {
+  try {
+    const [todayBody, upcomingBody] = await Promise.all([
+      fetchJson("/api/tasks/today"),
+      fetchJson("/api/tasks?completed=false"),
+    ]);
+    const now = new Date();
+    const end = new Date(now);
+    end.setDate(end.getDate() + 7);
+    const upcoming = (upcomingBody.data || []).filter((task) => {
+      if (!task.due_date) return false;
+      const d = new Date(`${task.due_date}T00:00:00`);
+      const tomorrow = new Date(now);
+      tomorrow.setHours(0, 0, 0, 0);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return d >= tomorrow && d <= end;
+    });
+    renderSimpleTaskList($("#home-today-tasks"), todayBody.data || [], "今天没有待办");
+    renderSimpleTaskList($("#home-upcoming-tasks"), upcoming, "未来 7 天没有到期任务");
+  } catch (_) {
+    // 首页任务失败不打断主要内容
+  }
+}
+
+function bindTaskPage() {
+  $("#btn-add-user-task").addEventListener("click", () => openTaskModal());
+  $("#task-modal-close").addEventListener("click", closeTaskModal);
+  $("#btn-cancel-user-task").addEventListener("click", closeTaskModal);
+  $("#btn-save-user-task").addEventListener("click", saveTaskForm);
+  $("#task-modal").addEventListener("click", (event) => {
+    if (event.target === $("#task-modal")) closeTaskModal();
+  });
+  $("#task-form-title").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveTaskForm();
+  });
+
+  $$("#task-category-filter .segmented-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      taskFilters.category = button.dataset.value;
+      $$("#task-category-filter .segmented-btn").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      loadUserTasks();
+    });
+  });
+  $$("#task-status-filter .segmented-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      taskFilters.completed = button.dataset.value;
+      $$("#task-status-filter .segmented-btn").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      loadUserTasks();
+    });
   });
 }
 
@@ -2074,6 +2370,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindFeedPage();
   bindQaPage();
   bindTaskCenter();
+  bindTaskPage();
   bindRipple();
   loadStats();
   loadRecentNotes();
@@ -2081,4 +2378,6 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSchedulerConfig();
   loadSchedulerLogs();
   loadVectorStats();
+  loadTaskNoteOptions();
+  loadHomeTaskPanels();
 });
