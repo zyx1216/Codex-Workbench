@@ -711,6 +711,21 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">知识消化平台 v2.7.0</td>
+        <td class="time">2026-09-27 17:54</td>
+        <td>
+          <span class="tag">会议记录</span><span class="tag">AI整理</span><b>会议记录与 AI 整理</b>：
+          <ul>
+            <li>笔记表新增 note_type、meeting_time、meeting_attendees、meeting_topic 四列，用 note_type 区分普通/会议，不新建表；旧库通过 init_db 幂等补列。</li>
+            <li>新增会议记录弹窗，支持“AI 整理 / 手动填写”两段切换：AI 整理走后台任务（organize_meeting）和每 2 秒轮询，结果经用户确认后才保存。</li>
+            <li>AI 把原始记录整理成主题、参会人、时间、议题讨论、决议事项和后续待办的结构化纪要，原文缺少的信息留空、禁止编造。</li>
+            <li>纪要待办可逐条勾选，保存时创建“工作”任务并关联会议笔记；会议详情中也可对单条待办点“创建任务”。</li>
+            <li>会议笔记同样进入向量索引、质量评估队列，可被语义搜索和 RAG 问答检索；普通笔记功能不受影响。</li>
+            <li>修复 async_tasks 类型约束缺少 organize_meeting 的问题，旧库通过一次性表重建迁移；本版不新增依赖、不做语音转写，Agent 不新增工具。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
