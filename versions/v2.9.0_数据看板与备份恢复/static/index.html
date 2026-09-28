@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>个人工作台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true"></div>
+
+  <aside class="sidebar glass">
+    <div class="brand gradient-text">📘 个人工作台</div>
+    <nav class="nav">
+      <button class="nav-btn active" data-tab="home"><span class="nav-ico">🏠</span>首页</button>
+      <button class="nav-btn" data-tab="calendar"><span class="nav-ico">📅</span>日历</button>
+      <button class="nav-btn" data-tab="tasks"><span class="nav-ico">✅</span>任务</button>
+      <button class="nav-btn" data-tab="notes"><span class="nav-ico">📚</span>笔记库</button>
+      <button class="nav-btn" data-tab="qa"><span class="nav-ico">🤖</span>AI 助手</button>
+      <button class="nav-btn" data-tab="feed"><span class="nav-ico">📡</span>订阅</button>
+      <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
+      <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
+    </nav>
+    <div class="sidebar-version">v2.9.0</div>
+  </aside>
+
+  <main class="main">
+    <!-- 首页 -->
+    <section class="tab active" data-tab="home">
+      <h2 class="section-title gradient-text">数据看板</h2>
+
+      <!-- 4 张统计卡片 -->
+      <div class="dash-cards" id="dash-cards">
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">📝</span><span class="dash-title">笔记总数</span></div>
+          <div class="dash-value" id="dash-notes-value">0</div>
+          <div class="dash-delta" id="dash-notes-delta">—</div>
+        </div>
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">✅</span><span class="dash-title">今日任务</span></div>
+          <div class="dash-value" id="dash-tasks-value">0</div>
+          <div class="dash-delta" id="dash-tasks-delta">—</div>
+        </div>
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">📅</span><span class="dash-title">今日日程</span></div>
+          <div class="dash-value" id="dash-schedules-value">0</div>
+          <div class="dash-delta" id="dash-schedules-delta">—</div>
+        </div>
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">📥</span><span class="dash-title">待处理订阅</span></div>
+          <div class="dash-value" id="dash-pending-value">0</div>
+          <div class="dash-delta" id="dash-pending-delta">—</div>
+        </div>
+      </div>
+
+      <!-- 最近7天笔记趋势图 -->
+      <h2 class="section-title">最近 7 天笔记趋势</h2>
+      <div class="card glass dash-chart-card">
+        <canvas id="trend-canvas" height="200"></canvas>
+      </div>
+
+      <!-- 左：今日待办 右：今日日程 -->
+      <div class="dash-cols">
+        <div class="dash-col dash-col-left">
+          <h2 class="section-title">今日待办</h2>
+          <div class="card glass dash-list-card">
+            <div id="dash-today-tasks" class="dash-task-list"></div>
+          </div>
+        </div>
+        <div class="dash-col dash-col-right">
+          <h2 class="section-title">今日日程</h2>
+          <div class="card glass dash-list-card">
+            <div id="dash-today-schedules" class="dash-schedule-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 最近笔记：横向滚动 -->
+      <h2 class="section-title">最近笔记</h2>
+      <div id="dash-recent-notes" class="dash-recent-scroll"></div>
+
+      <!-- 快速操作（保留） -->
+      <h2 class="section-title">快速操作</h2>
+      <div class="cards actions">
+        <button class="card glass action" data-action="add-link">
+          <span class="action-icon">🔗</span><span class="action-text">输入链接</span>
+        </button>
+        <button class="card glass action" data-action="upload">
+          <span class="action-icon">📤</span><span class="action-text">上传文件</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 笔记库 -->
+    <section class="tab" data-tab="notes">
+      <h2 class="section-title gradient-text">笔记库</h2>
+      <div class="toolbar">
+        <input type="text" id="notes-search" class="input" placeholder="🔍 搜索标题或内容…" />
+        <div class="segmented" id="search-mode" role="group" aria-label="搜索模式">
+          <button type="button" class="segmented-btn active" data-mode="keyword">关键词搜索</button>
+          <button type="button" class="segmented-btn" data-mode="semantic">语义搜索</button>
+        </div>
+        <select id="notes-tag-filter" class="input">
+          <option value="">全部标签</option>
+        </select>
+        <select id="notes-category-filter" class="input">
+          <option value="">全部分类</option>
+        </select>
+        <div class="segmented" id="notes-type-mode" role="group" aria-label="笔记类型">
+          <button type="button" class="segmented-btn active" data-note-type="">全部</button>
+          <button type="button" class="segmented-btn" data-note-type="普通">普通</button>
+          <button type="button" class="segmented-btn" data-note-type="会议">会议</button>
+        </div>
+      </div>
+      <div class="notes-actions">
+        <button class="btn btn-primary" id="btn-add-meeting" type="button">＋ 会议记录</button>
+      </div>
+      <div id="notes-list" class="notes-list"></div>
+    </section>
+
+
+    <!-- 订阅 -->
+    <section class="tab" data-tab="feed">
+      <h2 class="section-title gradient-text">RSS 订阅</h2>
+
+      <div class="card glass form-card">
+        <div class="feed-head-row">
+          <h3 class="block-title">RSS 源管理</h3>
+          <div class="feed-head-actions">
+            <button class="btn btn-primary btn-sm" id="btn-add-rss" type="button">＋ 添加源</button>
+            <button class="btn btn-ghost btn-sm" id="btn-fetch-all-rss" type="button">全部抓取</button>
+          </div>
+        </div>
+        <p class="hint feed-tip">填写关注主题后，抓取时会由 AI 自动筛掉不相关内容；不填主题则全部进入待处理队列。</p>
+      </div>
+
+      <h2 class="section-title">RSS 源</h2>
+      <div id="rss-source-list" class="feed-list"></div>
+
+      <h2 class="section-title">待处理队列</h2>
+      <div class="card glass batch-toolbar">
+        <label class="check-field">
+          <input type="checkbox" id="pending-select-all" />
+          <span>全选</span>
+        </label>
+        <button class="btn btn-primary btn-sm" id="btn-batch-process" type="button">批量处理</button>
+        <div class="batch-progress" id="batch-progress" hidden>
+          <div class="progress-track">
+            <div class="progress-bar" id="batch-progress-bar"></div>
+          </div>
+          <div class="progress-text" id="batch-progress-text">准备中…</div>
+        </div>
+      </div>
+      <div id="pending-list" class="feed-list"></div>
+    </section>
+
+
+    <!-- AI 助手 -->
+    <section class="tab" data-tab="qa">
+      <h2 class="section-title gradient-text">AI 助手</h2>
+
+      <div class="card glass agent-page">
+        <div class="agent-status-bar">
+          <div class="vector-info">
+            <span class="vector-count" id="qa-vector-count">向量笔记：0</span>
+            <span class="vector-state" id="qa-vector-state">状态：空闲</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
+        </div>
+
+        <div class="agent-quick-commands" aria-label="快捷指令">
+          <button class="agent-quick-btn" type="button">今天有什么新内容</button>
+          <button class="agent-quick-btn" type="button">搜索人工智能相关笔记</button>
+          <button class="agent-quick-btn" type="button">添加RSS源</button>
+          <button class="agent-quick-btn" type="button">抓取所有RSS</button>
+        </div>
+
+        <div class="agent-chat-log" id="agent-chat-log">
+          <div class="agent-empty">用大白话告诉我要查什么、记什么，或要操作 RSS。</div>
+        </div>
+
+        <div class="agent-composer">
+          <textarea id="agent-message-input" class="input textarea" rows="2"
+                    placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <button class="btn btn-primary" id="btn-agent-send" type="button">发送</button>
+        </div>
+
+        <p class="hint">助手会先调用工具再总结；删除类操作不会由 AI 直接执行。</p>
+      </div>
+    </section>
+
+    <!-- 日历：本版只做月视图 -->
+    <section class="tab" data-tab="calendar">
+      <h2 class="section-title gradient-text">日历</h2>
+
+      <div class="card glass calendar-toolbar">
+        <button class="btn btn-ghost" id="btn-prev-month" type="button">← 上月</button>
+        <h3 class="calendar-month-title" id="calendar-month-title">日历</h3>
+        <button class="btn btn-ghost" id="btn-next-month" type="button">下月 →</button>
+        <button class="btn btn-primary" id="btn-add-schedule" type="button">＋ 新增日程</button>
+      </div>
+
+      <div class="calendar-weekdays">
+        <span>周一</span><span>周二</span><span>周三</span><span>周四</span>
+        <span>周五</span><span>周六</span><span>周日</span>
+      </div>
+      <div id="calendar-grid" class="calendar-grid"></div>
+    </section>
+
+    <!-- 日常/工作任务 -->
+    <section class="tab" data-tab="tasks">
+      <h2 class="section-title gradient-text">任务</h2>
+
+      <div class="card glass task-filters">
+        <div class="segmented" id="task-category-filter" role="group" aria-label="任务分类">
+          <button type="button" class="segmented-btn active" data-value="">全部</button>
+          <button type="button" class="segmented-btn" data-value="日常">日常</button>
+          <button type="button" class="segmented-btn" data-value="工作">工作</button>
+        </div>
+        <div class="segmented" id="task-status-filter" role="group" aria-label="任务状态">
+          <button type="button" class="segmented-btn active" data-value="">全部</button>
+          <button type="button" class="segmented-btn" data-value="false">未完成</button>
+          <button type="button" class="segmented-btn" data-value="true">已完成</button>
+        </div>
+      </div>
+
+      <div id="user-task-list" class="user-task-list"></div>
+      <button class="btn btn-primary task-add-btn" id="btn-add-user-task" type="button">＋ 新增任务</button>
+    </section>
+
+    <!-- 后台任务中心 -->
+    <section class="tab" data-tab="async-tasks">
+      <div class="tasks-heading">
+        <h2 class="section-title gradient-text">后台任务</h2>
+        <button class="btn btn-ghost btn-sm" id="btn-clear-cache" type="button">清空缓存</button>
+      </div>
+      <div class="card glass tasks-tip">
+        耗时任务会在后台排队执行，缓存默认保留 7 天。
+      </div>
+      <div id="task-list" class="task-list"></div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="tab" data-tab="settings">
+      <h2 class="section-title gradient-text">AI 配置</h2>
+      <div class="card glass form-card">
+        <label class="field">
+          <span class="field-label">服务商</span>
+          <select id="ai-provider" class="input">
+            <option value="doubao">豆包（火山引擎）</option>
+            <option value="custom">自定义（OpenAI 兼容）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Base URL</span>
+          <input type="text" id="ai-base-url" class="input"
+                 placeholder="https://ark.cn-beijing.volces.com/api/v3" />
+        </label>
+        <label class="field">
+          <span class="field-label">模型名称</span>
+          <input type="text" id="ai-model" class="input" placeholder="doubao-pro-32k" />
+        </label>
+        <label class="field">
+          <span class="field-label">API Key（已保存则不显示原文，留空表示不修改）</span>
+          <input type="password" id="ai-api-key" class="input" placeholder="sk-..." />
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save">保存配置</button>
+          <button class="btn btn-ghost" id="btn-test">测试连接</button>
+        </div>
+      </div>
+
+      <h2 class="section-title gradient-text">定时抓取</h2>
+      <div class="card glass form-card">
+        <div class="field">
+          <div class="field-label">自动抓取</div>
+          <label class="switch-field" for="scheduler-enabled">
+            <input type="checkbox" id="scheduler-enabled" class="switch-input" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">关闭</span>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">每日抓取时间</span>
+          <input type="time" id="scheduler-time" class="input time-input"
+                 value="08:00" required />
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-scheduler">保存设置</button>
+          <button class="btn btn-ghost" id="btn-run-now">立即抓取一次</button>
+        </div>
+        <div class="log-list" id="scheduler-logs"></div>
+      </div>
+
+      <h2 class="section-title">数据管理</h2>
+      <div class="card glass form-card">
+        <div class="field">
+          <span class="field-label">数据库路径</span>
+          <code class="path" id="db-path">./data/database.db</code>
+        </div>
+        <div class="field">
+          <span class="field-label">自动备份</span>
+          <span class="hint" id="auto-backup-info">检查中…</span>
+        </div>
+        <p class="hint backup-key-hint">🔑 API Key 不会被备份，恢复后需要重新填写。</p>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-backup-export" type="button">一键导出全部数据</button>
+          <button class="btn btn-ghost" id="btn-backup-restore" type="button">从备份恢复</button>
+          <input type="file" id="restore-file-input" accept=".zip,application/zip" hidden />
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 链接处理弹窗 -->
+  <div class="modal-mask" id="link-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="link-modal-close" title="关闭">×</button>
+
+      <!-- 输入阶段 -->
+      <div class="modal-stage" id="modal-stage-input">
+        <h3 class="modal-title">🔗 生成小白笔记</h3>
+        <p class="modal-desc">可自动抓取网页，也可以手动粘贴抓不了的正文。</p>
+
+        <div class="modal-tabs" role="group" aria-label="输入模式">
+          <button type="button" class="modal-tab-btn active" data-input-mode="url">链接抓取</button>
+          <button type="button" class="modal-tab-btn" data-input-mode="text">手动粘贴</button>
+        </div>
+
+        <div class="input-mode" id="input-mode-url">
+          <input type="text" id="link-url-input" class="input"
+                 placeholder="https://example.com/article" />
+        </div>
+
+        <div class="input-mode" id="input-mode-text" hidden>
+          <input type="text" id="manual-title-input" class="input"
+                 placeholder="标题（可选，不填则 AI 生成）" />
+          <textarea id="manual-content-input" class="input textarea manual-textarea"
+                    placeholder="粘贴文章正文..."></textarea>
+          <input type="text" id="manual-url-input" class="input"
+                 placeholder="来源链接（可选，仅作记录）" />
+        </div>
+
+        <div class="modal-error" id="link-modal-error" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-process-url">开始处理</button>
+        </div>
+      </div>
+
+      <!-- 处理中阶段 -->
+      <div class="modal-stage" id="modal-stage-loading" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p class="loading-text" id="process-loading-text">正在抓取和改写…</p>
+        <p class="hint">抓取网页加 AI 改写大约需要十几秒，请稍候</p>
+      </div>
+
+      <!-- 预览阶段 -->
+      <div class="modal-stage" id="modal-stage-preview" hidden>
+        <h3 class="modal-title" id="preview-title"></h3>
+        <div class="chip-row" id="preview-tags"></div>
+        <div class="preview-content" id="preview-content"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-note">💾 保存</button>
+          <button class="btn btn-ghost" id="btn-regenerate">🔄 重新生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 笔记编辑弹窗 -->
+  <!-- RSS 源新增/编辑弹窗 -->
+  <div class="modal-mask" id="rss-modal" hidden>
+    <div class="modal glass rss-modal-card">
+      <button class="modal-close" id="rss-modal-close" title="关闭">×</button>
+      <h3 class="modal-title" id="rss-modal-title">添加 RSS 源</h3>
+
+      <label class="field">
+        <span class="field-label">源名称</span>
+        <input type="text" id="rss-form-name" class="input" placeholder="如：技术博客" />
+      </label>
+      <label class="field">
+        <span class="field-label">RSS 地址</span>
+        <input type="text" id="rss-form-url" class="input" placeholder="https://example.com/feed.xml" />
+      </label>
+      <label class="field">
+        <span class="field-label">关注主题（逗号分隔）</span>
+        <input type="text" id="rss-form-topics" class="input"
+               placeholder="比如：Agent开发,大模型,机器学习，逗号分隔" />
+      </label>
+
+      <div class="switch-row">
+        <label class="switch-field">
+          <input type="checkbox" id="rss-form-ai-filter" checked />
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span class="switch-label">开启 AI 相关性筛选</span>
+        </label>
+      </div>
+      <div class="switch-row">
+        <label class="switch-field">
+          <input type="checkbox" id="rss-form-auto" />
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span class="switch-label">开启自动处理</span>
+        </label>
+      </div>
+
+      <div class="modal-error" id="rss-modal-error" hidden></div>
+      <p class="hint rss-risk-hint">关注主题为空时不筛选；开启自动处理后，相关内容将直接改写存笔记，不会经过手动确认。</p>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-rss" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 会议记录弹窗：AI 整理 / 手动填写 两段 -->
+  <div class="modal-mask" id="meeting-modal" hidden>
+    <div class="modal glass meeting-modal-card">
+      <button class="modal-close" id="meeting-close" title="关闭">×</button>
+      <h3 class="modal-title">会议记录</h3>
+
+      <div class="segmented meeting-tabs" id="meeting-tabs" role="group" aria-label="会议录入方式">
+        <button type="button" class="segmented-btn active" data-meeting-tab="ai">AI 整理</button>
+        <button type="button" class="segmented-btn" data-meeting-tab="manual">手动填写</button>
+      </div>
+
+      <!-- AI 整理段 -->
+      <div class="meeting-pane" data-meeting-pane="ai">
+        <textarea id="meeting-raw-text" class="input textarea" rows="9" placeholder="粘贴原始会议记录…"></textarea>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-organize-meeting" type="button">AI 整理</button>
+        </div>
+        <div id="meeting-organized" class="meeting-organized" hidden></div>
+        <div class="meeting-todo-pick" id="meeting-todo-pick" hidden>
+          <label class="meeting-check-all">
+            <input type="checkbox" id="meeting-todo-all" /> <span>全选待办</span>
+          </label>
+          <div id="meeting-todo-list" class="meeting-todo-list"></div>
+        </div>
+        <div class="btn-row" id="meeting-save-organized-row" hidden>
+          <button class="btn btn-primary" id="btn-save-organized" type="button">保存为会议记录</button>
+        </div>
+      </div>
+
+      <!-- 手动填写段 -->
+      <div class="meeting-pane" data-meeting-pane="manual" hidden>
+        <label class="field">
+          <span class="field-label">标题</span>
+          <input type="text" id="meeting-manual-title" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">会议时间</span>
+          <input type="datetime-local" id="meeting-manual-time" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">参会人（逗号分隔）</span>
+          <input type="text" id="meeting-manual-attendees" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">会议主题</span>
+          <input type="text" id="meeting-manual-topic" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">正文</span>
+          <textarea id="meeting-manual-content" class="input textarea" rows="8"></textarea>
+        </label>
+        <div class="modal-error" id="meeting-manual-error" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-manual-meeting" type="button">保存为会议记录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="modal-mask" id="edit-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="edit-modal-close" title="关闭">×</button>
+      <h3 class="modal-title">✏️ 编辑笔记</h3>
+
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input type="text" id="edit-title" class="input" />
+      </label>
+      <label class="field">
+        <span class="field-label">正文</span>
+        <textarea id="edit-content" class="input textarea" rows="14"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">标签（逗号分隔）</span>
+        <input type="text" id="edit-tags" class="input" placeholder="标签1, 标签2" />
+      </label>
+      <label class="field">
+        <span class="field-label">分类</span>
+        <select id="edit-category" class="input"></select>
+      </label>
+      <div class="modal-error" id="edit-modal-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-edit">💾 保存</button>
+        <button class="btn btn-ghost" id="btn-cancel-edit">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日期日程列表弹窗 -->
+  <div class="modal-mask" id="schedule-day-modal" hidden>
+    <div class="modal glass schedule-day-card">
+      <button class="modal-close" id="schedule-day-close" title="关闭">×</button>
+      <h3 class="modal-title" id="schedule-day-title">当天日程</h3>
+      <div id="schedule-day-list" class="schedule-day-list"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="schedule-day-add" type="button">新增日程</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日程详情弹窗 -->
+  <div class="modal-mask" id="schedule-detail-modal" hidden>
+    <div class="modal glass schedule-detail-card">
+      <button class="modal-close" id="schedule-detail-close" title="关闭">×</button>
+      <h3 class="modal-title" id="schedule-detail-title">日程详情</h3>
+      <div class="schedule-detail-color" id="schedule-detail-color"></div>
+      <div class="schedule-detail-body" id="schedule-detail-body"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-edit-schedule" type="button">编辑</button>
+        <button class="btn btn-ghost danger-text" id="btn-delete-schedule" type="button">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日程新增/编辑弹窗 -->
+  <div class="modal-mask" id="schedule-form-modal" hidden>
+    <div class="modal glass schedule-form-card">
+      <button class="modal-close" id="schedule-form-close" title="关闭">×</button>
+      <h3 class="modal-title" id="schedule-form-modal-title">新增日程</h3>
+
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input type="text" id="schedule-form-title" class="input" placeholder="日程标题" />
+      </label>
+      <label class="field">
+        <span class="field-label">类型</span>
+        <select id="schedule-form-type" class="input">
+          <option value="日常">日常</option>
+          <option value="旅行">旅行</option>
+          <option value="工作">工作</option>
+          <option value="其他">其他</option>
+        </select>
+      </label>
+      <div class="schedule-form-row">
+        <label class="field">
+          <span class="field-label">开始时间</span>
+          <input type="datetime-local" id="schedule-form-start" class="input" />
+        </label>
+        <label class="field">
+          <span class="field-label">结束时间</span>
+          <input type="datetime-local" id="schedule-form-end" class="input" />
+        </label>
+      </div>
+      <label class="field">
+        <span class="field-label">地点</span>
+        <input type="text" id="schedule-form-location" class="input" />
+      </label>
+      <label class="field">
+        <span class="field-label">备注 / 行程详情</span>
+        <textarea id="schedule-form-description" class="input textarea" rows="5"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">关联笔记</span>
+        <select id="schedule-form-note" class="input">
+          <option value="">不关联</option>
+        </select>
+      </label>
+      <label class="field color-field">
+        <span class="field-label">颜色</span>
+        <input type="color" id="schedule-form-color" value="#06b6d4" />
+      </label>
+
+      <div class="modal-error" id="schedule-form-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-schedule" type="button">保存</button>
+        <button class="btn btn-ghost" id="schedule-form-cancel" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 任务新增/编辑弹窗 -->
+  <div class="modal-mask" id="task-modal" hidden>
+    <div class="modal glass task-modal-card">
+      <button class="modal-close" id="task-modal-close" title="关闭">×</button>
+      <h3 class="modal-title" id="task-modal-title">新增任务</h3>
+
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input type="text" id="task-form-title" class="input" placeholder="要做什么" />
+      </label>
+      <label class="field">
+        <span class="field-label">分类</span>
+        <select id="task-form-category" class="input">
+          <option value="日常">日常</option>
+          <option value="工作">工作</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">优先级</span>
+        <select id="task-form-priority" class="input">
+          <option value="高">高</option>
+          <option value="中" selected>中</option>
+          <option value="低">低</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">截止日期</span>
+        <input type="date" id="task-form-due-date" class="input" />
+      </label>
+      <label class="field">
+        <span class="field-label">关联笔记</span>
+        <select id="task-form-note" class="input">
+          <option value="">不关联</option>
+        </select>
+      </label>
+
+      <div class="modal-error" id="task-modal-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-user-task" type="button">保存</button>
+        <button class="btn btn-ghost" id="btn-cancel-user-task" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 文件上传弹窗 -->
+  <div class="modal-mask" id="upload-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="upload-modal-close" title="关闭">×</button>
+
+      <!-- 选择阶段 -->
+      <div class="upload-stage" id="upload-stage-select">
+        <h3 class="modal-title">📤 上传文件</h3>
+        <p class="modal-desc">支持 PDF、Word（docx）和 txt，单个文件最大 20MB。</p>
+
+        <div class="dropzone" id="upload-dropzone" role="button" tabindex="0">
+          <div class="dropzone-icon">📄</div>
+          <p><strong>点击选择文件</strong>，或拖拽到这里</p>
+          <p class="hint">上传后会自动解析正文并改写成通俗笔记</p>
+        </div>
+        <input type="file" id="upload-file-input" hidden
+               accept=".txt,.pdf,.docx" />
+
+        <div class="selected-file" id="selected-file" hidden>
+          <span id="selected-file-name"></span>
+        </div>
+        <div class="modal-error" id="upload-modal-error" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-start-upload" disabled>开始上传</button>
+        </div>
+      </div>
+
+      <!-- 处理阶段 -->
+      <div class="upload-stage" id="upload-stage-processing" hidden>
+        <h3 class="modal-title">正在处理文件</h3>
+        <p class="selected-file-name" id="processing-file-name"></p>
+        <div class="progress-track">
+          <div class="progress-bar" id="upload-progress-bar"></div>
+        </div>
+        <p class="progress-text" id="upload-progress-text">准备上传…</p>
+      </div>
+
+      <!-- 预览阶段 -->
+      <div class="upload-stage" id="upload-stage-preview" hidden>
+        <h3 class="modal-title" id="upload-preview-title"></h3>
+        <div class="chip-row" id="upload-preview-tags"></div>
+        <div class="preview-content" id="upload-preview-content"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-upload">💾 保存</button>
+          <button class="btn btn-ghost" id="btn-reupload">🔄 重新生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- RSS 待处理内容预览弹窗 -->
+  <div class="modal-mask" id="pending-modal" hidden>
+    <div class="modal glass">
+      <button class="modal-close" id="pending-modal-close" title="关闭">×</button>
+      <h3 class="modal-title" id="pending-preview-title"></h3>
+      <div class="chip-row" id="pending-preview-tags"></div>
+      <div class="preview-content" id="pending-preview-content"></div>
+      <div class="modal-error" id="pending-modal-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-pending">💾 保存</button>
+        <button class="btn btn-ghost" id="btn-reprocess-pending">🔄 重新生成</button>
+        <button class="btn btn-ghost" id="btn-cancel-pending">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 笔记风格重新生成弹窗 -->
+  <div class="modal-mask" id="style-modal" hidden>
+    <div class="modal glass style-modal-card">
+      <button class="modal-close" id="style-modal-close" title="关闭">×</button>
+      <h3 class="modal-title">🔁 选择重新生成风格</h3>
+      <p class="modal-desc" id="style-modal-note-title"></p>
+      <div class="style-options">
+        <button type="button" class="style-option" data-style="通俗">
+          <strong>通俗</strong>
+          <span>零基础小白能看懂</span>
+        </button>
+        <button type="button" class="style-option" data-style="精简">
+          <strong>精简</strong>
+          <span>要点式，不超过300字</span>
+        </button>
+        <button type="button" class="style-option" data-style="详细">
+          <strong>详细</strong>
+          <span>展开解释，800字以上</span>
+        </button>
+      </div>
+      <div class="modal-error" id="style-modal-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="btn-cancel-style">取消</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- 备份恢复确认弹窗 -->
+  <div class="modal-mask" id="restore-confirm-modal" hidden>
+    <div class="modal glass restore-confirm-card">
+      <button class="modal-close" id="restore-confirm-close" title="关闭">×</button>
+      <h3 class="modal-title">确认恢复备份</h3>
+      <div class="restore-warning">⚠️ 恢复将覆盖当前所有数据，系统会先自动备份当前数据。</div>
+      <div class="restore-meta">
+        <span class="field-label">备份时间</span>
+        <strong id="restore-backup-time">--</strong>
+      </div>
+      <div class="restore-files">
+        <span class="field-label">备份内容</span>
+        <ul id="restore-file-list"></ul>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-confirm-restore" type="button">确认恢复</button>
+        <button class="btn btn-ghost" id="btn-cancel-restore" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast-host"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
