@@ -21,7 +21,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.9.0</div>
+    <div class="sidebar-version">v2.10.0</div>
   </aside>
 
   <main class="main">
@@ -114,6 +114,19 @@
       </div>
       <div class="notes-actions">
         <button class="btn btn-primary" id="btn-add-meeting" type="button">＋ 会议记录</button>
+        <button class="btn btn-ghost" id="btn-batch-manage" type="button">批量管理</button>
+      </div>
+      <div class="notes-batch-bar card glass" id="notes-batch-bar" hidden>
+        <span class="notes-batch-count" id="notes-batch-count">已选 0 篇</span>
+        <label class="notes-batch-select-all">
+          <input type="checkbox" id="notes-batch-all" />
+          <span>全选</span>
+        </label>
+        <button class="btn btn-danger btn-sm" id="btn-batch-delete" type="button">批量删除</button>
+        <button class="btn btn-ghost btn-sm" id="btn-batch-category" type="button">批量改分类</button>
+        <button class="btn btn-ghost btn-sm" id="btn-batch-tags" type="button">批量加标签</button>
+        <button class="btn btn-primary btn-sm" id="btn-batch-export" type="button">批量导出</button>
+        <button class="btn btn-ghost btn-sm" id="btn-batch-cancel" type="button">取消</button>
       </div>
       <div id="notes-list" class="notes-list"></div>
     </section>
@@ -494,6 +507,27 @@
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-save-edit">💾 保存</button>
         <button class="btn btn-ghost" id="btn-cancel-edit">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量操作输入弹窗 -->
+  <div class="modal-mask" id="note-batch-prompt-modal" hidden>
+    <div class="modal glass note-batch-prompt-card">
+      <button class="modal-close" id="note-batch-prompt-close" title="关闭">×</button>
+      <h3 class="modal-title" id="note-batch-prompt-title">批量操作</h3>
+      <label class="field" id="note-batch-category-field">
+        <span class="field-label">选择分类</span>
+        <select id="note-batch-category" class="input"></select>
+      </label>
+      <label class="field" id="note-batch-tags-field" hidden>
+        <span class="field-label">新增标签（逗号分隔）</span>
+        <input type="text" id="note-batch-tags" class="input" placeholder="标签1, 标签2" />
+      </label>
+      <div class="modal-error" id="note-batch-prompt-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-note-batch-confirm" type="button">确认</button>
+        <button class="btn btn-ghost" id="btn-note-batch-cancel" type="button">取消</button>
       </div>
     </div>
   </div>

@@ -28,6 +28,7 @@ from services import (
     cache_service,
     crawler_service,
     file_service,
+    note_export_service,
     note_service,
     rag_service,
     rss_service,
@@ -98,6 +99,12 @@ class NoteCreateRequest(BaseModel):
     # AI 整理结果（保存整理纪要时传）和勾选要转任务的待办索引
     organized: dict[str, Any] | None = None
     selected_todos: list[int] = []
+
+
+class NoteExportRequest(BaseModel):
+    """笔记批量导出请求体。"""
+
+    note_ids: list[int]
 
 
 class NoteUpdateRequest(BaseModel):
@@ -461,6 +468,27 @@ def list_notes(
     })
 
 
+@app.post("/api/notes/export")
+def export_notes(payload: NoteExportRequest, db: Session = Depends(get_db)):
+    """批量导出选中的笔记，按分类打包成 zip。"""
+    note_ids = list(dict.fromkeys(payload.note_ids))
+    if not note_ids:
+        return fail("请选择要导出的笔记")
+    notes = note_export_service.get_notes_by_ids(db, note_ids)
+    if len(notes) != len(note_ids):
+        return fail("包含不存在的笔记，无法导出")
+
+    file_name = f"笔记导出_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return Response(
+        content=note_export_service.build_zip(notes),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename*=UTF-8''{quote(file_name)}"
+        },
+    )
+
+
 # ============ 会议记录 ============
 class MeetingCreateRequest(BaseModel):
     """手动创建会议记录请求体。"""
@@ -516,6 +544,27 @@ def create_meeting_route(payload: MeetingCreateRequest, db: Session = Depends(ge
         meeting_topic=topic or None,
     )
     return ok(note_service.serialize_note(note), message="会议记录已创建")
+
+@app.get("/api/notes/{note_id}/export")
+def export_note(note_id: int, db: Session = Depends(get_db)):
+    """导出单篇笔记 Markdown。"""
+    try:
+        note = note_service.get_note_by_id(db, note_id)
+    except note_service.NoteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    file_name = (
+        note_export_service.sanitize_filename(note.title) or "无标题"
+    ) + ".md"
+    return Response(
+        content=note_export_service.build_markdown(note).encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename*=UTF-8''{quote(file_name)}"
+        },
+    )
+
 
 @app.get("/api/notes/{note_id}")
 def get_note(note_id: int, db: Session = Depends(get_db)):

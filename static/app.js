@@ -470,6 +470,13 @@ let searchMode = "keyword";
 
 let noteTypeFilter = "";
 
+// v2.10 笔记批量管理状态
+let currentPageNotes = [];
+let batchMode = false;
+let selectedNoteIds = new Set();
+let batchBusy = false;
+let batchPromptMode = "category";
+
 function currentFilters() {
   return {
     keyword: $("#notes-search").value.trim(),
@@ -545,6 +552,8 @@ async function loadNotes() {
 
 function renderNotes(items) {
   const listEl = $("#notes-list");
+  currentPageNotes = items;
+  listEl.classList.toggle("batch-mode", batchMode);
   listEl.innerHTML = "";
   if (items.length === 0) {
     const empty = document.createElement("div");
@@ -553,9 +562,13 @@ function renderNotes(items) {
       <div class="empty-icon">📝</div>
       <p>暂无笔记，去首页输入链接生成第一篇吧</p>`;
     listEl.appendChild(empty);
+    pruneSelectedNotes();
+    updateBatchUI();
     return;
   }
   items.forEach((note) => listEl.appendChild(buildNoteCard(note)));
+  pruneSelectedNotes();
+  updateBatchUI();
 }
 
 
@@ -566,6 +579,13 @@ function buildNoteCard(note) {
     card.classList.add("low-quality");
   }
   card.dataset.noteId = note.id;
+  card.classList.toggle("batch-selectable", batchMode);
+  card.classList.toggle("batch-selected", selectedNoteIds.has(note.id));
+
+  if (batchMode) {
+    const checkbox = buildNoteBatchCheckbox(note);
+    card.appendChild(checkbox);
+  }
 
   // 卡片头部：标题、分类、来源、时间；点头部展开
   const head = document.createElement("div");
@@ -700,6 +720,11 @@ function buildNoteCard(note) {
   editBtn.textContent = "✏️ 编辑";
   detailActions.appendChild(editBtn);
 
+  const exportBtn = document.createElement("button");
+  exportBtn.className = "btn btn-ghost btn-sm";
+  exportBtn.textContent = "📤 导出";
+  detailActions.appendChild(exportBtn);
+
   const delBtn = document.createElement("button");
   delBtn.className = "btn btn-danger btn-sm";
   delBtn.textContent = "🗑 删除";
@@ -730,6 +755,11 @@ function buildNoteCard(note) {
     openEditModal(note);
   });
 
+  exportBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    downloadSingleNote(note);
+  });
+
   delBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
     if (!confirm("确定删除这篇笔记吗？删除后无法恢复。")) return;
@@ -745,6 +775,305 @@ function buildNoteCard(note) {
   });
 
   return card;
+}
+
+
+/* ============ v2.10 笔记批量管理 ============ */
+function buildNoteBatchCheckbox(note) {
+  const label = document.createElement("label");
+  label.className = "note-batch-check";
+  label.title = "选择这篇笔记";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = selectedNoteIds.has(note.id);
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    toggleNoteSelection(note.id, input.checked);
+  });
+
+  label.appendChild(input);
+  return label;
+}
+
+function toggleNoteSelection(noteId, checked) {
+  if (checked) selectedNoteIds.add(noteId);
+  else selectedNoteIds.delete(noteId);
+  const card = $(`.note-card[data-note-id="${noteId}"]`);
+  if (card) card.classList.toggle("batch-selected", checked);
+  updateBatchUI();
+}
+
+function pruneSelectedNotes() {
+  const currentIds = new Set(currentPageNotes.map((note) => note.id));
+  selectedNoteIds = new Set(
+    Array.from(selectedNoteIds).filter((id) => currentIds.has(id))
+  );
+}
+
+function getSelectedNotes() {
+  return currentPageNotes.filter((note) => selectedNoteIds.has(note.id));
+}
+
+function updateBatchUI() {
+  if (!batchMode) return;
+  const count = selectedNoteIds.size;
+  $("#notes-batch-count").textContent = `已选 ${count} 篇`;
+  const allInput = $("#notes-batch-all");
+  const total = currentPageNotes.length;
+  allInput.checked = total > 0 && count === total;
+  allInput.indeterminate = count > 0 && count < total;
+}
+
+function setBatchMode(enabled) {
+  batchMode = enabled;
+  if (!enabled) selectedNoteIds.clear();
+  $("#notes-batch-bar").hidden = !enabled;
+  renderNotes(currentPageNotes);
+}
+
+function setBatchBusy(busy) {
+  batchBusy = busy;
+  $$("#notes-batch-bar button").forEach((btn) => {
+    btn.disabled = busy;
+  });
+  $("#notes-batch-all").disabled = busy;
+}
+
+async function batchDeleteNotes() {
+  const notes = getSelectedNotes();
+  if (!notes.length) {
+    toast("请先选择要删除的笔记", "error");
+    return;
+  }
+  if (!confirm(`确定删除${notes.length}篇笔记？此操作不可恢复`)) return;
+
+  setBatchBusy(true);
+  const failed = [];
+  const successIds = new Set();
+  for (const note of notes) {
+    try {
+      await fetchJson(`/api/notes/${note.id}`, { method: "DELETE" });
+      successIds.add(note.id);
+      selectedNoteIds.delete(note.id);
+    } catch (err) {
+      failed.push({ note, message: err.message });
+    }
+  }
+
+  // 成功删除的卡片移出当前页；失败项保留方便重试
+  currentPageNotes = currentPageNotes.filter(
+    (note) => !successIds.has(note.id)
+  );
+  renderNotes(currentPageNotes);
+  setBatchBusy(false);
+
+  const successCount = notes.length - failed.length;
+  if (failed.length === 0) {
+    toast(`已成功操作${successCount}篇笔记`, "success");
+  } else {
+    failed.forEach((item) => {
+      toast(`《${item.note.title || "无标题"}》删除失败：${item.message}`, "error");
+    });
+    toast(`成功 ${successCount} 篇，失败 ${failed.length} 篇`, "warning");
+  }
+}
+
+async function fillBatchCategorySelect() {
+  const select = $("#note-batch-category");
+  select.innerHTML = "";
+  const res = await fetchJson("/api/categories");
+  (res.data || []).forEach((category) => {
+    const option = document.createElement("option");
+    option.value = category.name;
+    option.textContent = category.name;
+    select.appendChild(option);
+  });
+}
+
+async function openBatchPrompt(mode) {
+  if (!getSelectedNotes().length) {
+    toast("请先选择笔记", "error");
+    return;
+  }
+  batchPromptMode = mode;
+  $("#note-batch-prompt-error").hidden = true;
+  $("#note-batch-tags").value = "";
+
+  try {
+    await fillBatchCategorySelect();
+  } catch (err) {
+    toast(err.message || "分类加载失败", "error");
+    return;
+  }
+
+  if (mode === "category") {
+    $("#note-batch-prompt-title").textContent = "批量改分类";
+    $("#note-batch-category-field").hidden = false;
+    $("#note-batch-tags-field").hidden = true;
+  } else {
+    $("#note-batch-prompt-title").textContent = "批量加标签";
+    $("#note-batch-category-field").hidden = true;
+    $("#note-batch-tags-field").hidden = false;
+  }
+  $("#note-batch-prompt-modal").hidden = false;
+}
+
+function closeBatchPrompt() {
+  $("#note-batch-prompt-modal").hidden = true;
+}
+
+async function confirmBatchPrompt() {
+  const notes = getSelectedNotes();
+  let updateItems = [];
+
+  if (batchPromptMode === "category") {
+    const category = $("#note-batch-category").value;
+    if (!category) {
+      toast("请选择分类", "error");
+      return;
+    }
+    updateItems = notes.map((note) => ({
+      note,
+      payload: {
+        title: note.title,
+        content: note.content,
+        tags: note.tags || [],
+        category,
+      },
+    }));
+  } else {
+    const newTags = parseTagsText($("#note-batch-tags").value);
+    if (!newTags.length) {
+      const error = $("#note-batch-prompt-error");
+      error.textContent = "请填写至少一个标签";
+      error.hidden = false;
+      return;
+    }
+    updateItems = notes.map((note) => ({
+      note,
+      payload: {
+        title: note.title,
+        content: note.content,
+        tags: Array.from(new Set([...(note.tags || []), ...newTags])),
+        category: note.category || "默认",
+      },
+    }));
+  }
+
+  const button = $("#btn-note-batch-confirm");
+  button.disabled = true;
+  setBatchBusy(true);
+  const failed = [];
+
+  for (const item of updateItems) {
+    try {
+      await fetchJson(`/api/notes/${item.note.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(item.payload),
+      });
+    } catch (err) {
+      failed.push({ note: item.note, message: err.message });
+    }
+  }
+
+  const failedIds = new Set(failed.map((item) => item.note.id));
+  selectedNoteIds = new Set(
+    Array.from(selectedNoteIds).filter((id) => failedIds.has(id))
+  );
+  closeBatchPrompt();
+  await loadNotes();
+  setBatchBusy(false);
+  button.disabled = false;
+
+  const successCount = updateItems.length - failed.length;
+  if (!failed.length) {
+    toast(`已成功操作${successCount}篇笔记`, "success");
+  } else {
+    failed.forEach((item) => {
+      toast(`《${item.note.title || "无标题"}》操作失败：${item.message}`, "error");
+    });
+    toast(`成功 ${successCount} 篇，失败 ${failed.length} 篇`, "warning");
+  }
+}
+
+function parseDownloadFileName(response, fallbackName) {
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const matched = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (matched) return decodeURIComponent(matched[1]);
+  return fallbackName;
+}
+
+async function readDownloadResponse(response, fallbackName) {
+  if (!response.ok) {
+    let body = null;
+    try { body = await response.json(); } catch (_) { /* 非 JSON 忽略 */ }
+    throw new Error(body?.message || body?.detail || `下载失败（${response.status}）`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = parseDownloadFileName(response, fallbackName);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadSingleNote(note) {
+  const link = document.createElement("a");
+  link.href = `/api/notes/${note.id}/export`;
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function batchExportNotes() {
+  const notes = getSelectedNotes();
+  if (!notes.length) {
+    toast("请先选择要导出的笔记", "error");
+    return;
+  }
+
+  const button = $("#btn-batch-export");
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = "导出中…";
+  try {
+    const response = await fetch("/api/notes/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note_ids: notes.map((note) => note.id) }),
+    });
+    await readDownloadResponse(response, "笔记导出.zip");
+    toast("笔记导出完成", "success");
+  } catch (err) {
+    toast(err.message || "笔记导出失败", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = oldText;
+  }
+}
+
+function bindNoteBatchActions() {
+  $("#btn-batch-manage").addEventListener("click", () => setBatchMode(true));
+  $("#btn-batch-cancel").addEventListener("click", () => setBatchMode(false));
+  $("#notes-batch-all").addEventListener("change", (event) => {
+    currentPageNotes.forEach((note) => toggleNoteSelection(note.id, event.target.checked));
+  });
+  $("#btn-batch-delete").addEventListener("click", batchDeleteNotes);
+  $("#btn-batch-category").addEventListener("click", () => openBatchPrompt("category"));
+  $("#btn-batch-tags").addEventListener("click", () => openBatchPrompt("tags"));
+  $("#btn-batch-export").addEventListener("click", batchExportNotes);
+  $("#note-batch-prompt-close").addEventListener("click", closeBatchPrompt);
+  $("#btn-note-batch-cancel").addEventListener("click", closeBatchPrompt);
+  $("#btn-note-batch-confirm").addEventListener("click", confirmBatchPrompt);
+  $("#note-batch-prompt-modal").addEventListener("click", (event) => {
+    if (event.target.id === "note-batch-prompt-modal") closeBatchPrompt();
+  });
 }
 
 
@@ -3387,6 +3716,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindNotesFilters();
   bindNotesSearch();
   bindEditModal();
+  bindNoteBatchActions();
   bindStyleModal();
   bindSettings();
   bindUploadModal();

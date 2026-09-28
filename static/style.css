@@ -2302,6 +2302,83 @@ input[type="color"] {
   white-space: nowrap;
 }
 /* ============================================================
+   v2.10 新增样式：笔记批量操作与导出
+   ============================================================ */
+
+.notes-batch-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+}
+
+.notes-batch-bar[hidden] {
+  display: none;
+}
+
+.notes-batch-count {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  margin-right: 4px;
+}
+
+.notes-batch-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.notes-batch-select-all input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+}
+
+.notes-list.batch-mode .note-card {
+  padding-left: 52px;
+}
+
+.note-batch-check {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.note-batch-check input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.notes-list .note-card.batch-selected {
+  border-color: var(--primary);
+  border-width: 2px;
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
+}
+
+.note-batch-prompt-card {
+  max-width: 460px;
+}
+
+.note-batch-prompt-card .field {
+  margin-top: 12px;
+}
+
+
+/* ============================================================
    v2.7 新增样式：会议记录
    ============================================================ */
 
