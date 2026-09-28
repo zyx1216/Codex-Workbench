@@ -21,76 +21,72 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.8.0</div>
+    <div class="sidebar-version">v2.9.0</div>
   </aside>
 
   <main class="main">
     <!-- 首页 -->
     <section class="tab active" data-tab="home">
-      <h2 class="section-title gradient-text">概览</h2>
-      <div class="cards stats">
-        <div class="card glass stat">
-          <div class="stat-label">笔记总数</div>
-          <div class="stat-value counter" data-target="0">0</div>
+      <h2 class="section-title gradient-text">数据看板</h2>
+
+      <!-- 4 张统计卡片 -->
+      <div class="dash-cards" id="dash-cards">
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">📝</span><span class="dash-title">笔记总数</span></div>
+          <div class="dash-value" id="dash-notes-value">0</div>
+          <div class="dash-delta" id="dash-notes-delta">—</div>
         </div>
-        <div class="card glass stat">
-          <div class="stat-label">今日新增</div>
-          <div class="stat-value counter" data-target="0">0</div>
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">✅</span><span class="dash-title">今日任务</span></div>
+          <div class="dash-value" id="dash-tasks-value">0</div>
+          <div class="dash-delta" id="dash-tasks-delta">—</div>
         </div>
-        <div class="card glass stat">
-          <div class="stat-label">待处理</div>
-          <div class="stat-value counter purple" data-target="0">0</div>
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">📅</span><span class="dash-title">今日日程</span></div>
+          <div class="dash-value" id="dash-schedules-value">0</div>
+          <div class="dash-delta" id="dash-schedules-delta">—</div>
         </div>
-        <div class="card glass stat">
-          <div class="stat-label">任务总数</div>
-          <div class="stat-value counter cyan" data-target="0">0</div>
-        </div>
-        <div class="card glass stat">
-          <div class="stat-label">今日待办</div>
-          <div class="stat-value counter cyan" data-target="0">0</div>
-        </div>
-        <div class="card glass stat">
-          <div class="stat-label">已完成任务</div>
-          <div class="stat-value counter cyan" data-target="0">0</div>
-        </div>
-        <div class="card glass stat">
-          <div class="stat-label">今日日程</div>
-          <div class="stat-value counter cyan" data-target="0">0</div>
+        <div class="card glass dash-card">
+          <div class="dash-card-head"><span class="dash-ico">📥</span><span class="dash-title">待处理订阅</span></div>
+          <div class="dash-value" id="dash-pending-value">0</div>
+          <div class="dash-delta" id="dash-pending-delta">—</div>
         </div>
       </div>
 
-      <div class="home-task-grid">
-        <section class="home-task-panel">
+      <!-- 最近7天笔记趋势图 -->
+      <h2 class="section-title">最近 7 天笔记趋势</h2>
+      <div class="card glass dash-chart-card">
+        <canvas id="trend-canvas" height="200"></canvas>
+      </div>
+
+      <!-- 左：今日待办 右：今日日程 -->
+      <div class="dash-cols">
+        <div class="dash-col dash-col-left">
           <h2 class="section-title">今日待办</h2>
-          <div id="home-today-tasks" class="home-task-list"></div>
-        </section>
-        <section class="home-task-panel">
-          <h2 class="section-title">即将到期</h2>
-          <div id="home-upcoming-tasks" class="home-task-list"></div>
-        </section>
+          <div class="card glass dash-list-card">
+            <div id="dash-today-tasks" class="dash-task-list"></div>
+          </div>
+        </div>
+        <div class="dash-col dash-col-right">
+          <h2 class="section-title">今日日程</h2>
+          <div class="card glass dash-list-card">
+            <div id="dash-today-schedules" class="dash-schedule-list"></div>
+          </div>
+        </div>
       </div>
 
-      <section class="home-schedule-panel">
-        <h2 class="section-title">今日日程</h2>
-        <div id="home-today-schedules" class="home-schedule-list"></div>
-      </section>
-
+      <!-- 最近笔记：横向滚动 -->
       <h2 class="section-title">最近笔记</h2>
-      <div class="card glass empty" id="recent-notes">
-        <div class="empty-icon">📭</div>
-        <p>暂无笔记</p>
-        <p class="hint">添加链接或上传文件后，这里会显示最近的 5 条</p>
-      </div>
+      <div id="dash-recent-notes" class="dash-recent-scroll"></div>
 
+      <!-- 快速操作（保留） -->
       <h2 class="section-title">快速操作</h2>
       <div class="cards actions">
         <button class="card glass action" data-action="add-link">
-          <span class="action-icon">🔗</span>
-          <span class="action-text">输入链接</span>
+          <span class="action-icon">🔗</span><span class="action-text">输入链接</span>
         </button>
         <button class="card glass action" data-action="upload">
-          <span class="action-icon">📤</span>
-          <span class="action-text">上传文件</span>
+          <span class="action-icon">📤</span><span class="action-text">上传文件</span>
         </button>
       </div>
     </section>
@@ -302,9 +298,15 @@
           <span class="field-label">数据库路径</span>
           <code class="path" id="db-path">./data/database.db</code>
         </div>
+        <div class="field">
+          <span class="field-label">自动备份</span>
+          <span class="hint" id="auto-backup-info">检查中…</span>
+        </div>
+        <p class="hint backup-key-hint">🔑 API Key 不会被备份，恢复后需要重新填写。</p>
         <div class="btn-row">
-          <button class="btn btn-ghost" data-action="export">导出数据</button>
-          <button class="btn btn-ghost" data-action="import">导入数据</button>
+          <button class="btn btn-primary" id="btn-backup-export" type="button">一键导出全部数据</button>
+          <button class="btn btn-ghost" id="btn-backup-restore" type="button">从备份恢复</button>
+          <input type="file" id="restore-file-input" accept=".zip,application/zip" hidden />
         </div>
       </div>
     </section>
@@ -716,6 +718,27 @@
     </div>
   </div>
 
+
+  <!-- 备份恢复确认弹窗 -->
+  <div class="modal-mask" id="restore-confirm-modal" hidden>
+    <div class="modal glass restore-confirm-card">
+      <button class="modal-close" id="restore-confirm-close" title="关闭">×</button>
+      <h3 class="modal-title">确认恢复备份</h3>
+      <div class="restore-warning">⚠️ 恢复将覆盖当前所有数据，系统会先自动备份当前数据。</div>
+      <div class="restore-meta">
+        <span class="field-label">备份时间</span>
+        <strong id="restore-backup-time">--</strong>
+      </div>
+      <div class="restore-files">
+        <span class="field-label">备份内容</span>
+        <ul id="restore-file-list"></ul>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-confirm-restore" type="button">确认恢复</button>
+        <button class="btn btn-ghost" id="btn-cancel-restore" type="button">取消</button>
+      </div>
+    </div>
+  </div>
   <div id="toast-host"></div>
 
   <script src="/static/app.js"></script>

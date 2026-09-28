@@ -9,10 +9,11 @@
 
 from contextlib import asynccontextmanager
 from datetime import datetime
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,6 +22,8 @@ from sqlalchemy.orm import Session
 import config
 from services import (
     ai_service,
+    backup_service,
+    dashboard_service,
     agent_service,
     cache_service,
     crawler_service,
@@ -41,6 +44,8 @@ from services.db import get_db, init_db
 async def lifespan(_app: FastAPI):
     """应用生命周期：启动后台服务，关闭时清理调度线程。"""
     init_db()
+    # 每天首次启动自动备份数据库，并清理超过 7 天的自动备份
+    backup_service.auto_backup_on_startup()
     scheduler_service.start_scheduler()
     # SQLite 有笔记但向量库为空时后台补齐，不阻塞 FastAPI 启动
     vector_service.start_startup_sync_if_needed()
@@ -242,6 +247,69 @@ def get_stats(db: Session = Depends(get_db)):
     data.update(task_service.get_stats(db))
     data["today_schedules"] = schedule_service.get_today_count(db)
     return ok(data)
+# ============ 首页数据看板 ============
+@app.get("/api/dashboard/summary")
+def dashboard_summary(db: Session = Depends(get_db)):
+    """首页看板：4 张统计卡当前值、统一周环比与最近自动备份时间。"""
+    return ok(dashboard_service.get_summary(db))
+
+
+@app.get("/api/dashboard/trend")
+def dashboard_trend(days: int = Query(7, ge=1, le=30),
+                    db: Session = Depends(get_db)):
+    """首页看板：最近 days 天每天新增笔记数量（供原生 Canvas 折线图）。"""
+    return ok(dashboard_service.get_trend(db, days))
+
+
+# ============ 数据备份与恢复 ============
+@app.get("/api/backup")
+def download_backup():
+    """一键导出全部数据为 zip 备份（不含 API Key），浏览器直接下载。"""
+    try:
+        content = backup_service.build_backup_bytes()
+        filename = backup_service.backup_filename()
+    except backup_service.BackupError as exc:
+        return fail(str(exc))
+    encoded_name = quote(filename)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename*=UTF-8''{encoded_name}"
+        },
+    )
+
+
+@app.post("/api/backup/restore/prepare")
+async def restore_prepare(file: UploadFile = File(...)):
+    """上传备份 zip：只读校验并暂存，返回清单供确认；不改动现有数据。"""
+    data = await file.read()
+    try:
+        result = backup_service.prepare_restore(data)
+    except backup_service.BackupError as exc:
+        return fail(str(exc))
+    return ok(result, message="备份校验通过，请确认是否恢复")
+
+
+class RestoreApplyRequest(BaseModel):
+    """恢复确认请求体：传 prepare 返回的一次性 token。"""
+
+    token: str
+
+
+@app.post("/api/backup/restore/apply")
+def restore_apply(payload: RestoreApplyRequest):
+    """确认恢复：先备份当前数据，再热重载并原子替换，最后触发向量对账。"""
+    try:
+        result = backup_service.apply_restore(payload.token)
+    except backup_service.BackupError as exc:
+        return fail(str(exc))
+    message = "恢复成功，请刷新页面"
+    if result.get("vector_warning"):
+        message += "（向量重建稍后自动重试）"
+    return ok(result, message=message)
+
 
 
 @app.get("/api/ai-config")

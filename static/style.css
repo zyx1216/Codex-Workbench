@@ -2536,3 +2536,231 @@ input[type="color"] {
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* ============================================================
+   v2.9.0 首页数据看板 + 数据备份恢复样式
+   ============================================================ */
+
+/* 4 张统计卡片：等宽栅格 */
+.dash-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.dash-card {
+  border-radius: 16px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dash-ico { font-size: 17px; }
+.dash-title {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.dash-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+.dash-delta {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-height: 16px;
+}
+.dash-up { color: #34d399; font-weight: 600; }
+.dash-down { color: #f87171; font-weight: 600; }
+.dash-new { color: #22d3ee; font-weight: 600; }
+
+/* 趋势图卡片 */
+.dash-chart-card {
+  padding: 18px 20px;
+  margin-bottom: 8px;
+}
+#trend-canvas { display: block; }
+
+/* 双栏：左60% 右40% */
+.dash-cols {
+  display: grid;
+  grid-template-columns: 60fr 40fr;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.dash-list-card { padding: 14px 16px; }
+
+/* 看板左栏：今日待办 */
+.simple-task-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 2px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.simple-task-row:last-child { border-bottom: 0; }
+.simple-task-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.simple-task-title {
+  color: var(--text);
+  font-size: 14px;
+}
+.dash-jump { cursor: pointer; }
+.dash-jump:hover { color: #22d3ee; }
+.simple-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.simple-task-meta .overdue, .simple-task-row.overdue .simple-task-meta span:last-child {
+  color: #f87171;
+}
+.simple-task-empty, .home-schedule-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 10px 2px;
+}
+.dash-view-all {
+  margin-top: 8px;
+  background: transparent;
+  border: 0;
+  color: #22d3ee;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 4px 0;
+}
+.dash-view-all:hover { text-decoration: underline; }
+
+/* 看板右栏：今日日程 */
+.home-schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-left: 3px solid var(--schedule-color, #5b8def);
+  padding: 8px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.home-schedule-row:hover { background: var(--glass-bg-hi); }
+.home-schedule-time {
+  color: var(--schedule-color, #22d3ee);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.home-schedule-title {
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 最近笔记：横向滚动 */
+.dash-recent-scroll {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding: 4px 2px 12px;
+}
+.dash-note-card {
+  flex: 0 0 240px;
+  height: 140px;
+  border-radius: 14px;
+  padding: 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.dash-note-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-hi);
+}
+.dash-note-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.dash-note-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.dash-recent-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 8px 2px;
+}
+
+/* 备份/恢复：安全提示 */
+.backup-key-hint {
+  color: #fbbf24;
+  font-size: 12.5px;
+  margin: 6px 0 12px;
+}
+
+/* 备份恢复确认弹窗 */
+.restore-confirm-card {
+  width: min(520px, calc(100vw - 40px));
+}
+.restore-warning {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.12);
+  border-radius: 10px;
+  color: #fbbf24;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.restore-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.restore-files {
+  margin-bottom: 18px;
+}
+.restore-files ul {
+  margin: 8px 0 0;
+  padding: 10px 12px 10px 28px;
+  max-height: 180px;
+  overflow-y: auto;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.05);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.restore-files li + li { margin-top: 5px; }

@@ -5,7 +5,7 @@
    - 笔记库：列表、搜索、标签/分类筛选、展开、编辑、删除
    - 文件上传：拖拽/选择、进度、预览、保存
    - RSS 订阅：源管理、待处理队列、预览后保存
-   - 首页：真实统计数字 + 最近笔记
+   - 首页：数据看板、趋势图、备份恢复入口
    ============================================================ */
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -83,21 +83,115 @@ function animateCounter(el, target, duration = 800) {
   requestAnimationFrame(step);
 }
 
+/* ============ 首页数据看板：统计卡 + 趋势图 ============ */
 async function loadStats() {
+  // 统计卡和趋势图互不依赖，并行加载
+  await Promise.all([renderDashSummary(), drawTrendChart()]);
+}
+
+async function renderDashSummary() {
   try {
-    const res = await fetchJson("/api/stats");
+    const res = await fetchJson("/api/dashboard/summary");
     const d = res.data || {};
-    const targets = [
-      d.total_notes ?? 0,
-      d.today_notes ?? 0,
-      d.pending_count ?? 0,
-      d.total_tasks ?? 0,
-      d.today_tasks ?? 0,
-      d.completed_tasks ?? 0,
-      d.today_schedules ?? 0,
-    ];
-    $$(".counter").forEach((el, i) => animateCounter(el, targets[i]));
-  } catch (_) { /* 首页统计失败不打扰 */ }
+    renderDashCard("notes", d.notes);
+    renderDashCard("tasks", d.tasks);
+    renderDashCard("schedules", d.schedules);
+    renderDashCard("pending", d.pending);
+
+    const infoEl = $("#auto-backup-info");
+    if (infoEl) {
+      infoEl.textContent = d.auto_backup
+        ? `已开启，最近备份：${d.auto_backup}`
+        : "已开启，今日启动后生成";
+    }
+  } catch (_) { /* 看板统计失败不打扰用户 */ }
+}
+
+function renderDashCard(key, card) {
+  if (!card) return;
+  const valueEl = $(`#dash-${key}-value`);
+  const deltaEl = $(`#dash-${key}-delta`);
+  if (valueEl) valueEl.textContent = card.value ?? 0;
+  if (!deltaEl) return;
+  // 任务卡额外显示今日已完成数
+  deltaEl.innerHTML = (key === "tasks" && card.sub != null)
+    ? `已完成 ${card.sub} · ${formatDelta(card.delta_percent)}`
+    : formatDelta(card.delta_percent);
+}
+
+function formatDelta(percent) {
+  if (percent === null || percent === undefined) return '<span class="dash-new">新增</span>';
+  if (Number(percent) === 0) return "—";
+  return percent > 0
+    ? `<span class="dash-up">▲ ${Math.abs(percent)}%</span>`
+    : `<span class="dash-down">▼ ${Math.abs(percent)}%</span>`;
+}
+
+async function drawTrendChart() {
+  const canvas = $("#trend-canvas");
+  if (!canvas) return;
+  let points = [];
+  try {
+    const res = await fetchJson("/api/dashboard/trend?days=7");
+    points = res.data || [];
+  } catch (_) { return; }
+
+  // 按设备像素比放大，高清屏不糊
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.parentElement.clientWidth - 40;
+  const cssHeight = 200;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  const padL = 34, padR = 16, padT = 18, padB = 28;
+  const plotW = cssWidth - padL - padR;
+  const plotH = cssHeight - padT - padB;
+  const maxVal = Math.max(1, ...points.map((p) => p.count));
+  const xAt = (i) => padL + (points.length === 1 ? plotW / 2 : plotW * i / (points.length - 1));
+  const yAt = (v) => padT + plotH - plotH * v / maxVal;
+
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  [0, Math.round(maxVal / 2), maxVal].forEach((v) => {
+    ctx.fillText(String(v), padL - 8, yAt(v) + 4);
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.beginPath(); ctx.moveTo(padL, yAt(v)); ctx.lineTo(cssWidth - padR, yAt(v)); ctx.stroke();
+  });
+
+  if (!points.length) return;
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+  grad.addColorStop(0, "rgba(6,182,212,0.35)");
+  grad.addColorStop(1, "rgba(6,182,212,0)");
+  ctx.beginPath();
+  points.forEach((p, i) => { i ? ctx.lineTo(xAt(i), yAt(p.count)) : ctx.moveTo(xAt(i), yAt(p.count)); });
+  ctx.lineTo(xAt(points.length - 1), padT + plotH);
+  ctx.lineTo(xAt(0), padT + plotH);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  points.forEach((p, i) => { i ? ctx.lineTo(xAt(i), yAt(p.count)) : ctx.moveTo(xAt(i), yAt(p.count)); });
+  ctx.strokeStyle = "#06b6d4";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.textAlign = "center";
+  points.forEach((p, i) => {
+    const x = xAt(i), y = yAt(p.count);
+    ctx.fillStyle = "#06b6d4";
+    ctx.beginPath(); ctx.arc(x, y, 3.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.fillText(String(p.count), x, y - 8);
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.fillText(p.date, x, padT + plotH + 18);
+  });
 }
 
 /* ============ 日常/工作任务状态 ============ */
@@ -758,32 +852,32 @@ function bindNotesSearch() {
   });
 }
 
-/* ============ 首页：最近笔记 ============ */
+/* 最近笔记：横向滚动卡片 */
 async function loadRecentNotes() {
-  const box = $("#recent-notes");
+  const box = $("#dash-recent-notes");
+  if (!box) return;
+  box.innerHTML = "";
   try {
     const res = await fetchJson("/api/notes?size=5");
     const items = res.data.items || [];
-    box.innerHTML = "";
-    if (items.length === 0) {
-      // 无笔记：恢复空状态
-      box.className = "card glass empty";
-      box.innerHTML = `
-        <div class="empty-icon">📭</div>
-        <p>暂无笔记</p>
-        <p class="hint">添加链接或上传文件后，这里会显示最近的 5 条</p>`;
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "dash-recent-empty";
+      empty.textContent = "暂无笔记";
+      box.appendChild(empty);
       return;
     }
-    box.className = "recent-list";
     items.forEach((note) => {
-      const row = document.createElement("div");
-      row.className = "recent-item";
-      row.innerHTML = `
-        <span class="recent-title">${escapeHtml(note.title || "无标题")}</span>
-        <span class="recent-time">${formatTime(note.created_at)}</span>`;
-      // 点击切到笔记库并展开对应笔记
-      row.addEventListener("click", () => goToNote(note.id));
-      box.appendChild(row);
+      const card = document.createElement("div");
+      card.className = "card glass dash-note-card";
+      card.innerHTML = `
+        <div class="dash-note-title">${escapeHtml(note.title || "无标题")}</div>
+        <div class="dash-note-meta">
+          <span class="dash-note-cat">${escapeHtml(note.category || "默认")}</span>
+          <span class="dash-note-date">${escapeHtml((note.created_at || "").slice(0, 10))}</span>
+        </div>`;
+      card.addEventListener("click", () => goToNote(note.id));
+      box.appendChild(card);
     });
   } catch (_) { /* 最近笔记加载失败保持空状态 */ }
 }
@@ -1646,9 +1740,118 @@ function bindSettings() {
   $("#scheduler-enabled").addEventListener("change", updateSwitchText);
   $("#btn-save-scheduler").addEventListener("click", saveSchedulerSettings);
   $("#btn-run-now").addEventListener("click", (event) => runFetchNow(event.currentTarget));
-  $$('[data-action="export"], [data-action="import"]').forEach((btn) => {
-    btn.addEventListener("click", () => toast("数据导入导出将在后续版本实现", "warning"));
+  $("#btn-backup-export").addEventListener("click", downloadBackup);
+  $("#btn-backup-restore").addEventListener("click", () => $("#restore-file-input").click());
+  $("#restore-file-input").addEventListener("change", onRestoreFilePicked);
+  $("#restore-confirm-close").addEventListener("click", closeRestoreConfirm);
+  $("#btn-cancel-restore").addEventListener("click", closeRestoreConfirm);
+  $("#btn-confirm-restore").addEventListener("click", applyPreparedRestore);
+  $("#restore-confirm-modal").addEventListener("click", (event) => {
+    if (event.target.id === "restore-confirm-modal") closeRestoreConfirm();
   });
+}
+
+let pendingRestore = null;
+
+/* 一键导出备份：取到完整 zip 后再触发浏览器下载 */
+async function downloadBackup() {
+  const btn = $("#btn-backup-export");
+  btn.disabled = true;
+  btn.textContent = "正在备份…";
+  try {
+    const res = await fetch("/api/backup");
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const body = await res.json();
+      throw new Error(body.message || "备份失败");
+    }
+    if (!res.ok) throw new Error(`备份失败（${res.status}）`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filenameFromDisposition(res.headers.get("content-disposition")) || "工作台备份.zip";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast("备份成功", "success");
+  } catch (err) {
+    toast(err.message || "备份失败", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "一键导出全部数据";
+  }
+}
+
+function filenameFromDisposition(header) {
+  if (!header) return "";
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded) return decodeURIComponent(encoded[1]);
+  return "";
+}
+
+/* 选中 zip 后先上传预检，通过后打开确认弹窗 */
+async function onRestoreFilePicked(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+
+  const btn = $("#btn-backup-restore");
+  btn.disabled = true;
+  btn.textContent = "正在校验备份…";
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetchJson("/api/backup/restore/prepare", {method: "POST", body: form});
+    pendingRestore = res.data || {};
+    openRestoreConfirm(pendingRestore);
+  } catch (err) {
+    toast(err.message || "备份校验失败，当前数据未改动", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "从备份恢复";
+  }
+}
+
+function openRestoreConfirm(data) {
+  $("#restore-backup-time").textContent = data.backup_time || "未知";
+  const list = $("#restore-file-list");
+  list.innerHTML = "";
+  (data.files || []).forEach((name) => {
+    const item = document.createElement("li");
+    item.textContent = name;
+    list.appendChild(item);
+  });
+  $("#restore-confirm-modal").hidden = false;
+}
+
+function closeRestoreConfirm() {
+  $("#restore-confirm-modal").hidden = true;
+  pendingRestore = null;
+}
+
+/* 确认恢复：服务端会先自动备份当前数据，再替换文件 */
+async function applyPreparedRestore() {
+  if (!pendingRestore?.token) return;
+  const btn = $("#btn-confirm-restore");
+  btn.disabled = true;
+  btn.textContent = "正在恢复…";
+  try {
+    const res = await fetchJson("/api/backup/restore/apply", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({token: pendingRestore.token}),
+    });
+    pendingRestore = null;
+    $("#restore-confirm-modal").hidden = true;
+    toast(res.message || "恢复成功，请刷新页面", "success");
+  } catch (err) {
+    toast(err.message || "恢复失败，当前数据未改动", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "确认恢复";
+  }
 }
 
 
@@ -2330,7 +2533,8 @@ async function toggleTaskDone(task, check) {
   }
 }
 
-function renderSimpleTaskList(box, tasks, emptyText) {
+/* 看板左栏：今日待办，按优先级排序，最多显示3条 */
+function renderDashTodayTasks(box, tasks, emptyText) {
   box.innerHTML = "";
   if (!tasks.length) {
     const empty = document.createElement("div");
@@ -2340,12 +2544,14 @@ function renderSimpleTaskList(box, tasks, emptyText) {
     return;
   }
 
-  tasks.forEach((task) => {
+  const priOrder = {"高": 0, "中": 1, "低": 2};
+  const sorted = [...tasks].sort((a, b) =>
+    (priOrder[a.priority] ?? 3) - (priOrder[b.priority] ?? 3));
+  sorted.slice(0, 3).forEach((task) => {
     const row = document.createElement("div");
     row.className = `simple-task-row ${task.is_overdue ? "overdue" : ""}`;
     const check = document.createElement("input");
     check.type = "checkbox";
-    check.checked = false;
     check.addEventListener("change", async () => {
       try {
         await fetchJson(`/api/tasks/${task.id}/complete`, {method: "POST"});
@@ -2361,40 +2567,34 @@ function renderSimpleTaskList(box, tasks, emptyText) {
     const info = document.createElement("div");
     info.className = "simple-task-info";
     info.innerHTML = `
-      <span class="simple-task-title">${escapeHtml(task.title)}</span>
+      <span class="simple-task-title dash-jump">${escapeHtml(task.title)}</span>
       <span class="simple-task-meta">
         <span class="todo-priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span>
-        <span class="${task.is_overdue ? "overdue" : ""}">${task.due_date ? escapeHtml(task.due_date) : ""}</span>
-      </span>
-    `;
+        <span class="${task.is_overdue ? "overdue" : ""}">${task.due_date ? escapeHtml(task.due_date) : "无截止"}</span>
+      </span>`;
+    info.querySelector(".simple-task-title").addEventListener("click", () => {
+      document.querySelector('.nav-btn[data-tab="tasks"]').click();
+    });
     row.appendChild(check);
     row.appendChild(info);
     box.appendChild(row);
   });
+
+  if (sorted.length > 3) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "dash-view-all";
+    more.textContent = "查看全部";
+    more.addEventListener("click", () => document.querySelector('.nav-btn[data-tab="tasks"]').click());
+    box.appendChild(more);
+  }
 }
 
 async function loadHomeTaskPanels() {
   try {
-    const [todayBody, upcomingBody] = await Promise.all([
-      fetchJson("/api/tasks/today"),
-      fetchJson("/api/tasks?completed=false"),
-    ]);
-    const now = new Date();
-    const end = new Date(now);
-    end.setDate(end.getDate() + 7);
-    const upcoming = (upcomingBody.data || []).filter((task) => {
-      if (!task.due_date) return false;
-      const d = new Date(`${task.due_date}T00:00:00`);
-      const tomorrow = new Date(now);
-      tomorrow.setHours(0, 0, 0, 0);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return d >= tomorrow && d <= end;
-    });
-    renderSimpleTaskList($("#home-today-tasks"), todayBody.data || [], "今天没有待办");
-    renderSimpleTaskList($("#home-upcoming-tasks"), upcoming, "未来 7 天没有到期任务");
-  } catch (_) {
-    // 首页任务失败不打断主要内容
-  }
+    const todayBody = await fetchJson("/api/tasks/today");
+    renderDashTodayTasks($("#dash-today-tasks"), todayBody.data || [], "今天没有待办");
+  } catch (_) { /* 首页任务加载失败不打断主要内容 */ }
 }
 
 function bindTaskPage() {
@@ -2889,11 +3089,11 @@ async function openScheduleFromAnywhere(schedule) {
   openScheduleDetail(schedule);
 }
 
+/* 看板右栏：今日日程，按时间排序，点击跳转日历页 */
 async function loadHomeSchedules() {
-  const box = $("#home-today-schedules");
+  const box = $("#dash-today-schedules");
   if (!box) return;
   box.innerHTML = "";
-
   try {
     const body = await fetchJson("/api/schedules/today");
     const schedules = body.data || [];
@@ -2904,17 +3104,16 @@ async function loadHomeSchedules() {
       box.appendChild(empty);
       return;
     }
-
     schedules.forEach((schedule) => {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "home-schedule-row";
       row.style.setProperty("--schedule-color", schedule.effective_color || "#5b8def");
+      const locText = schedule.location ? ` · ${escapeHtml(schedule.location)}` : "";
       row.innerHTML = `
         <span class="home-schedule-time">${escapeHtml(schedule.start_time?.slice(11, 16) || "--:--")}</span>
-        <span class="home-schedule-title">${escapeHtml(schedule.title)}</span>
-      `;
-      row.addEventListener("click", () => openScheduleFromAnywhere(schedule));
+        <span class="home-schedule-title">${escapeHtml(schedule.title)}${locText}</span>`;
+      row.addEventListener("click", () => document.querySelector('.nav-btn[data-tab="calendar"]').click());
       box.appendChild(row);
     });
   } catch (_) {
