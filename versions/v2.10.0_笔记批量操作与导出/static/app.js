@@ -1061,8 +1061,10 @@ async function batchExportNotes() {
 function bindNoteBatchActions() {
   $("#btn-batch-manage").addEventListener("click", () => setBatchMode(true));
   $("#btn-batch-cancel").addEventListener("click", () => setBatchMode(false));
-  $("#notes-batch-all").addEventListener("change", (event) => {
-    currentPageNotes.forEach((note) => toggleNoteSelection(note.id, event.target.checked));
+  $("#notes-batch-all").addEventListener("change", () => {
+    // change 触发时复选框状态已变化，按变更前的选择数量判断更可靠
+    const shouldSelectAll = selectedNoteIds.size < currentPageNotes.length;
+    currentPageNotes.forEach((note) => toggleNoteSelection(note.id, shouldSelectAll));
   });
   $("#btn-batch-delete").addEventListener("click", batchDeleteNotes);
   $("#btn-batch-category").addEventListener("click", () => openBatchPrompt("category"));
