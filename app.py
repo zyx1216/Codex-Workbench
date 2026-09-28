@@ -28,6 +28,7 @@ from services import (
     cache_service,
     crawler_service,
     file_service,
+    global_search_service,
     note_export_service,
     note_service,
     rag_service,
@@ -1115,6 +1116,16 @@ def semantic_search(payload: SearchRequest, db: Session = Depends(get_db)):
         item["score"] = result["score"]
         items.append(item)
     return ok({"items": items, "total": len(items)})
+
+
+@app.get("/api/search-global")
+def search_global(q: str = Query(default=""), db: Session = Depends(get_db)):
+    """全局搜索：同时检索笔记、任务和日程。"""
+    try:
+        data = global_search_service.search_global(db, q)
+    except global_search_service.GlobalSearchError as exc:
+        return fail(str(exc))
+    return ok(data)
 
 
 @app.post("/api/ask")

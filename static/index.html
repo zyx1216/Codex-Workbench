@@ -11,6 +11,7 @@
 
   <aside class="sidebar glass">
     <div class="brand gradient-text">📘 个人工作台</div>
+    <button class="sidebar-search-trigger" id="sidebar-search-trigger" type="button"><span>🔎</span>全局搜索 <kbd>Ctrl K</kbd></button>
     <nav class="nav">
       <button class="nav-btn active" data-tab="home"><span class="nav-ico">🏠</span>首页</button>
       <button class="nav-btn" data-tab="calendar"><span class="nav-ico">📅</span>日历</button>
@@ -21,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.10.0</div>
+    <div class="sidebar-version">v2.11.0</div>
   </aside>
 
   <main class="main">
@@ -485,7 +486,7 @@
   <div class="modal-mask" id="edit-modal" hidden>
     <div class="modal glass">
       <button class="modal-close" id="edit-modal-close" title="关闭">×</button>
-      <h3 class="modal-title">✏️ 编辑笔记</h3>
+      <h3 class="modal-title" id="edit-modal-title">✏️ 编辑笔记</h3>
 
       <label class="field">
         <span class="field-label">标题</span>
@@ -773,6 +774,50 @@
       </div>
     </div>
   </div>
+
+  <!-- 全局搜索弹窗 -->
+  <div class="modal-mask" id="global-search-modal" hidden>
+    <div class="modal glass global-search-card">
+      <button class="modal-close" id="global-search-close" title="关闭">×</button>
+      <h3 class="modal-title">🔎 全局搜索</h3>
+      <input type="text" id="global-search-input" class="input global-search-input"
+             placeholder="搜索笔记、任务、日程..." autocomplete="off" />
+      <div id="global-search-history" class="search-history" hidden>
+        <div class="search-history-head">
+          <span>搜索历史</span>
+          <button type="button" class="link-btn" id="global-search-clear-history">清除历史</button>
+        </div>
+        <div id="global-search-history-list"></div>
+      </div>
+      <div class="modal-error" id="global-search-error" hidden></div>
+      <div id="global-search-results" class="global-search-results"></div>
+    </div>
+  </div>
+
+  <!-- 快捷键帮助弹窗 -->
+  <div class="modal-mask" id="shortcuts-help-modal" hidden>
+    <div class="modal glass shortcuts-help-card">
+      <button class="modal-close" id="shortcuts-help-close" title="关闭">×</button>
+      <h3 class="modal-title">⌨️ 快捷键帮助</h3>
+      <div class="shortcut-groups">
+        <section class="shortcut-group">
+          <h4>全局快捷键</h4>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>K</kbd><span>打开全局搜索</span></div>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>N</kbd><span>新建笔记</span></div>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>1~8</kbd><span>快速切换导航页</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd><span>关闭当前弹窗</span></div>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>/</kbd><span>显示快捷键帮助</span></div>
+        </section>
+        <section class="shortcut-group">
+          <h4>笔记库快捷键</h4>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>F</kbd><span>聚焦笔记搜索框</span></div>
+          <div class="shortcut-row"><kbd>Delete</kbd><span>删除选中笔记（批量模式）</span></div>
+          <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>A</kbd><span>全选当前页笔记（批量模式）</span></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="toast-host"></div>
 
   <script src="/static/app.js"></script>

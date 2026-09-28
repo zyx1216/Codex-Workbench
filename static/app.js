@@ -6,6 +6,7 @@
    - 文件上传：拖拽/选择、进度、预览、保存
    - RSS 订阅：源管理、待处理队列、预览后保存
    - 首页：数据看板、趋势图、备份恢复入口
+   - v2.11：全局搜索、快捷键、搜索历史
    ============================================================ */
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1082,17 +1083,7 @@ function bindNoteBatchActions() {
 /* ============ 编辑弹窗 ============ */
 let editingNote = null;
 
-async function openEditModal(note) {
-  editingNote = note;
-  const errorBox = $("#edit-modal-error");
-  errorBox.hidden = true;
-
-  // 预填当前数据
-  $("#edit-title").value = note.title || "";
-  $("#edit-content").value = note.content || "";
-  $("#edit-tags").value = tagsToText(note.tags || []);
-
-  // 分类下拉：用聚合分类填选项，保证当前分类必在其中
+async function fillNoteCategorySelect(currentCategory = "默认") {
   const catSel = $("#edit-category");
   catSel.innerHTML = "";
   try {
@@ -1103,14 +1094,50 @@ async function openEditModal(note) {
       opt.textContent = cat.name;
       catSel.appendChild(opt);
     });
-  } catch (_) { /* 分类加载失败继续，至少保证当前分类可选 */ }
-  if (!Array.from(catSel.options).some((o) => o.value === note.category)) {
+  } catch (_) { /* 分类加载失败继续，至少保证默认和当前分类可选 */ }
+  if (!Array.from(catSel.options).some((option) => option.value === "默认")) {
+    const defaultOpt = document.createElement("option");
+    defaultOpt.value = "默认";
+    defaultOpt.textContent = "默认";
+    catSel.prepend(defaultOpt);
+  }
+  if (currentCategory && !Array.from(catSel.options).some((option) => option.value === currentCategory)) {
     const opt = document.createElement("option");
-    opt.value = note.category;
-    opt.textContent = note.category;
+    opt.value = currentCategory;
+    opt.textContent = currentCategory;
     catSel.appendChild(opt);
   }
-  catSel.value = note.category;
+  catSel.value = currentCategory || "默认";
+}
+
+async function openCreateNoteModal() {
+  editingNote = null;
+  $("#edit-modal-title").textContent = "📝 新建笔记";
+  $("#edit-modal-error").hidden = true;
+  $("#edit-title").value = "";
+  $("#edit-content").value = "";
+  $("#edit-tags").value = "";
+  await fillNoteCategorySelect("默认");
+  $("#edit-modal").hidden = false;
+  $("#edit-title").focus();
+}
+
+async function openCreateNoteShortcut() {
+  $('.nav-btn[data-tab="notes"]').click();
+  await openCreateNoteModal();
+}
+
+async function openEditModal(note) {
+  editingNote = note;
+  $("#edit-modal-title").textContent = "✏️ 编辑笔记";
+  const errorBox = $("#edit-modal-error");
+  errorBox.hidden = true;
+
+  // 预填当前数据
+  $("#edit-title").value = note.title || "";
+  $("#edit-content").value = note.content || "";
+  $("#edit-tags").value = tagsToText(note.tags || []);
+  await fillNoteCategorySelect(note.category || "默认");
 
   $("#edit-modal").hidden = false;
 }
@@ -1121,25 +1148,41 @@ function closeEditModal() {
 }
 
 async function saveEdit() {
-  if (!editingNote) return;
   const btn = $("#btn-save-edit");
   btn.disabled = true;
   const payload = {
     title: $("#edit-title").value.trim(),
     content: $("#edit-content").value,
     tags: parseTagsText($("#edit-tags").value),
-    category: $("#edit-category").value,
+    category: $("#edit-category").value || "默认",
   };
+  if (!payload.title) {
+    const errorBox = $("#edit-modal-error");
+    errorBox.textContent = "笔记标题不能为空";
+    errorBox.hidden = false;
+    btn.disabled = false;
+    return;
+  }
   try {
-    await fetchJson(`/api/notes/${editingNote.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    toast("笔记已更新", "success");
+    let response;
+    if (editingNote) {
+      response = await fetchJson(`/api/notes/${editingNote.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      response = await fetchJson("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    toast(response.message, "success");
     closeEditModal();
     // 重拉列表，保证卡片实时更新
     loadNotes();
+    loadStats();
   } catch (err) {
     const errorBox = $("#edit-modal-error");
     errorBox.textContent = err.message || "保存失败";
@@ -3711,13 +3754,351 @@ function bindMeetingModal() {
   });
 }
 
+
+/* ============ v2.11 全局搜索 ============ */
+const GLOBAL_SEARCH_HISTORY_KEY = "personalWorkbenchGlobalSearchHistory";
+const GLOBAL_SEARCH_DEBOUNCE_MS = 300;
+let globalSearchTimer = null;
+let globalSearchLastQuery = "";
+
+function readSearchHistory() {
+  try {
+    const data = JSON.parse(localStorage.getItem(GLOBAL_SEARCH_HISTORY_KEY) || "[]");
+    return Array.isArray(data) ? data.map(String).slice(0, 10) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeSearchHistory(items) {
+  localStorage.setItem(GLOBAL_SEARCH_HISTORY_KEY, JSON.stringify(items.slice(0, 10)));
+}
+
+function addSearchHistory(keyword) {
+  keyword = keyword.trim();
+  if (!keyword) return;
+  const items = readSearchHistory().filter((item) => item !== keyword);
+  items.unshift(keyword);
+  writeSearchHistory(items);
+}
+
+function clearSearchHistory() {
+  localStorage.removeItem(GLOBAL_SEARCH_HISTORY_KEY);
+  renderSearchHistory();
+}
+
+function renderSearchHistory() {
+  const box = $("#global-search-history");
+  const list = $("#global-search-history-list");
+  if (!box || !list) return;
+  const items = readSearchHistory();
+  list.innerHTML = "";
+  if (!items.length || globalSearchLastQuery) {
+    box.hidden = true;
+    return;
+  }
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "search-history-item";
+    button.textContent = item;
+    button.addEventListener("click", () => {
+      $("#global-search-input").value = item;
+      runGlobalSearch(item);
+    });
+    list.appendChild(button);
+  });
+  box.hidden = false;
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightKeywords(root, keyword) {
+  const terms = keyword.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+  if (!terms.length || !root) return;
+  const pattern = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "gi");
+  const testPattern = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "i");
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !testPattern.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent || ["MARK", "INPUT", "TEXTAREA", "SELECT", "SCRIPT", "STYLE", "KBD"].includes(parent.tagName)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach((node) => {
+    const parts = node.nodeValue.split(pattern);
+    const fragment = document.createDocumentFragment();
+    parts.forEach((part) => {
+      if (!part) return;
+      if (testPattern.test(part)) {
+        const mark = document.createElement("mark");
+        mark.className = "search-mark";
+        mark.textContent = part;
+        fragment.appendChild(mark);
+      } else {
+        fragment.appendChild(document.createTextNode(part));
+      }
+    });
+    node.parentNode.replaceChild(fragment, node);
+  });
+}
+
+function resultIcon(type) {
+  return {note: "📝", task: "✅", schedule: "📅"}[type] || "•";
+}
+
+function resultMetaText(result) {
+  if (result.type === "note") return result.meta.category || "默认";
+  if (result.type === "task") {
+    return [result.meta.priority, result.meta.due_date?.slice(0, 10)].filter(Boolean).join(" · ");
+  }
+  return [result.meta.schedule_type, result.meta.location].filter(Boolean).join(" · ");
+}
+
+function buildResultItem(result, keyword) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = `global-search-result search-result-${result.type}`;
+
+  const icon = document.createElement("span");
+  icon.className = "search-result-icon";
+  icon.textContent = resultIcon(result.type);
+
+  const body = document.createElement("span");
+  body.className = "search-result-body";
+
+  const title = document.createElement("span");
+  title.className = "search-result-title";
+  title.textContent = result.title || "无标题";
+
+  const summary = document.createElement("span");
+  summary.className = "search-result-summary";
+  summary.textContent = result.summary || "暂无摘要";
+
+  const meta = document.createElement("span");
+  meta.className = "search-result-meta";
+  meta.textContent = resultMetaText(result);
+
+  body.append(title, summary);
+  item.append(icon, body, meta);
+  highlightKeywords(body, keyword);
+
+  item.addEventListener("click", () => openGlobalSearchResult(result));
+  return item;
+}
+
+function addResultGroup(container, title, results, keyword) {
+  if (!results?.length) return;
+  const head = document.createElement("div");
+  head.className = "global-search-group-title";
+  head.textContent = title;
+  container.appendChild(head);
+  results.forEach((result) => container.appendChild(buildResultItem(result, keyword)));
+}
+
+function renderGlobalResults(data, keyword) {
+  const box = $("#global-search-results");
+  box.innerHTML = "";
+  const total = data.notes.length + data.tasks.length + data.schedules.length;
+  if (!total) {
+    const empty = document.createElement("div");
+    empty.className = "global-search-empty";
+    empty.textContent = "没有找到相关内容";
+    box.appendChild(empty);
+    return;
+  }
+  addResultGroup(box, "笔记", data.notes, keyword);
+  addResultGroup(box, "任务", data.tasks, keyword);
+  addResultGroup(box, "日程", data.schedules, keyword);
+}
+
+async function openGlobalSearchResult(result) {
+  closeGlobalSearch();
+  if (result.type === "note") {
+    await goToNote(result.id);
+    return;
+  }
+  if (result.type === "task") {
+    $('.nav-btn[data-tab="tasks"]').click();
+    const body = await fetchJson(`/api/tasks/${result.id}`);
+    openTaskModal(body.data);
+    return;
+  }
+  $('.nav-btn[data-tab="calendar"]').click();
+  const body = await fetchJson(`/api/schedules/${result.id}`);
+  await openScheduleFromAnywhere(body.data);
+}
+
+async function requestGlobalSearch(keyword) {
+  const errorBox = $("#global-search-error");
+  errorBox.hidden = true;
+  try {
+    const body = await fetchJson(`/api/search-global?q=${encodeURIComponent(keyword)}`);
+    addSearchHistory(keyword);
+    renderGlobalResults(body.data || {}, keyword);
+    renderSearchHistory();
+  } catch (err) {
+    $("#global-search-results").innerHTML = "";
+    errorBox.textContent = err.message || "搜索失败";
+    errorBox.hidden = false;
+  }
+}
+
+function runGlobalSearch(keyword) {
+  keyword = (keyword || $("#global-search-input").value).trim();
+  if (globalSearchLastQuery === keyword) return;
+  globalSearchLastQuery = keyword;
+  $("#global-search-results").innerHTML = "";
+  if (!keyword) {
+    $("#global-search-error").hidden = true;
+    renderSearchHistory();
+    return;
+  }
+  $("#global-search-history").hidden = true;
+  requestGlobalSearch(keyword);
+}
+
+function openGlobalSearch() {
+  $("#global-search-modal").hidden = false;
+  $("#global-search-input").focus();
+  renderSearchHistory();
+}
+
+function closeGlobalSearch() {
+  $("#global-search-modal").hidden = true;
+  if (globalSearchTimer) clearTimeout(globalSearchTimer);
+  $("#global-search-input").value = "";
+  globalSearchLastQuery = "";
+  $("#global-search-results").innerHTML = "";
+  $("#global-search-error").hidden = true;
+}
+
+function bindGlobalSearch() {
+  $("#sidebar-search-trigger").addEventListener("click", openGlobalSearch);
+  $("#global-search-close").addEventListener("click", closeGlobalSearch);
+  $("#global-search-clear-history").addEventListener("click", clearSearchHistory);
+  $("#global-search-input").addEventListener("input", () => {
+    if (globalSearchTimer) clearTimeout(globalSearchTimer);
+    globalSearchTimer = setTimeout(() => runGlobalSearch(), GLOBAL_SEARCH_DEBOUNCE_MS);
+  });
+  $("#global-search-input").addEventListener("focus", renderSearchHistory);
+  $("#global-search-modal").addEventListener("click", (event) => {
+    if (event.target.id === "global-search-modal") closeGlobalSearch();
+  });
+}
+
+/* ============ v2.11 快捷键 ============ */
+function isEditableElement(element) {
+  if (!element) return false;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)
+    || element.isContentEditable;
+}
+
+function currentTabName() {
+  return $(".tab.active")?.dataset.tab || "";
+}
+
+function closeTopModal() {
+  const modals = $$(".modal-mask:not([hidden])");
+  const modal = modals[modals.length - 1];
+  if (!modal) return false;
+  switch (modal.id) {
+    case "global-search-modal": closeGlobalSearch(); break;
+    case "edit-modal": closeEditModal(); break;
+    case "link-modal": closeLinkModal(); break;
+    case "note-batch-prompt-modal": closeBatchPrompt(); break;
+    case "schedule-day-modal": closeScheduleDayModal(); break;
+    case "schedule-detail-modal": closeScheduleDetailModal(); break;
+    case "schedule-form-modal": closeScheduleForm(); break;
+    case "task-modal": closeTaskModal(); break;
+    case "upload-modal": closeUploadModal(); break;
+    case "style-modal": closeStyleModal(); break;
+    case "restore-confirm-modal": closeRestoreConfirm(); break;
+    case "rss-modal": modal.hidden = true; break;
+    case "meeting-modal": modal.hidden = true; break;
+    case "pending-modal": modal.hidden = true; break;
+    default: modal.hidden = true;
+  }
+  return true;
+}
+
+function openShortcutsHelp() {
+  $("#shortcuts-help-modal").hidden = false;
+}
+
+function closeShortcutsHelp() {
+  $("#shortcuts-help-modal").hidden = true;
+}
+
+function bindShortcutsHelp() {
+  $("#shortcuts-help-close").addEventListener("click", closeShortcutsHelp);
+  $("#shortcuts-help-modal").addEventListener("click", (event) => {
+    if (event.target.id === "shortcuts-help-modal") closeShortcutsHelp();
+  });
+}
+
+function initShortcuts() {
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeTopModal();
+      return;
+    }
+    if (isEditableElement(event.target)) return;
+    if (!event.ctrlKey) return;
+
+    const key = event.key.toLowerCase();
+    if (key === "k") {
+      event.preventDefault();
+      openGlobalSearch();
+    } else if (key === "n") {
+      event.preventDefault();
+      openCreateNoteShortcut();
+    } else if (key === "/") {
+      event.preventDefault();
+      openShortcutsHelp();
+    } else if (/^[1-8]$/.test(key)) {
+      event.preventDefault();
+      const index = Number(key) - 1;
+      const button = $$(".sidebar .nav-btn")[index];
+      button?.click();
+    } else if (key === "f" && currentTabName() === "notes") {
+      event.preventDefault();
+      $("#notes-search").focus();
+    } else if (key === "a" && currentTabName() === "notes" && batchMode) {
+      event.preventDefault();
+      const shouldSelectAll = selectedNoteIds.size < currentPageNotes.length;
+      currentPageNotes.forEach((note) => toggleNoteSelection(note.id, shouldSelectAll));
+    }
+  });
+
+  // Delete 不按修饰键，单独判断，避免影响普通页面
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Delete" || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (isEditableElement(event.target)) return;
+    if (currentTabName() === "notes" && batchMode) {
+      event.preventDefault();
+      batchDeleteNotes();
+    }
+  });
+}
+
 /* ============ 启动 ============ */
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
+  initShortcuts();
   bindLinkModal();
   bindNotesFilters();
   bindNotesSearch();
   bindEditModal();
+  bindGlobalSearch();
+  bindShortcutsHelp();
   bindNoteBatchActions();
   bindStyleModal();
   bindSettings();
