@@ -254,17 +254,23 @@ body {
   to { transform: scale(2.5); opacity: 0; }
 }
 
-/* tab 淡入淡出 + 上滑 */
+/* tab 切换：未激活页彻底移出文档流，避免占用高度把当前页挤出视口 */
 .tab {
+  display: none;
   opacity: 0;
   transform: translateY(8px);
   pointer-events: none;
-  transition: opacity 0.35s ease, transform 0.35s ease;
 }
 .tab.active {
+  display: block;
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+  animation: tab-fade-in 0.35s ease;
+}
+@keyframes tab-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* toast 顶部滑入 */
