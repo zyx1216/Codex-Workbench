@@ -3,25 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>知识消化平台</title>
+  <title>个人工作台</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="bg-orbs" aria-hidden="true"></div>
 
-  <header class="topbar glass">
-    <div class="brand gradient-text">📘 知识消化平台</div>
-    <nav class="nav" id="nav">
-      <button class="nav-btn active" data-tab="home">首页</button>
-      <button class="nav-btn" data-tab="notes">笔记库</button>
-      <button class="nav-btn" data-tab="tasks">任务</button>
-      <button class="nav-btn" data-tab="calendar">日历</button>
-      <button class="nav-btn" data-tab="feed">订阅</button>
-      <button class="nav-btn" data-tab="qa">AI 助手</button>
-      <button class="nav-btn" data-tab="async-tasks">后台任务</button>
-      <button class="nav-btn" data-tab="settings">设置</button>
+  <aside class="sidebar glass">
+    <div class="brand gradient-text">📘 个人工作台</div>
+    <nav class="nav">
+      <button class="nav-btn active" data-tab="home"><span class="nav-ico">🏠</span>首页</button>
+      <button class="nav-btn" data-tab="calendar"><span class="nav-ico">📅</span>日历</button>
+      <button class="nav-btn" data-tab="tasks"><span class="nav-ico">✅</span>任务</button>
+      <button class="nav-btn" data-tab="notes"><span class="nav-ico">📚</span>笔记库</button>
+      <button class="nav-btn" data-tab="qa"><span class="nav-ico">🤖</span>AI 助手</button>
+      <button class="nav-btn" data-tab="feed"><span class="nav-ico">📡</span>订阅</button>
+      <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
+      <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-  </header>
+    <div class="sidebar-version">v2.8.0</div>
+  </aside>
 
   <main class="main">
     <!-- 首页 -->

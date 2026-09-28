@@ -37,7 +37,7 @@ MAX_TOOL_ROUNDS = 4
 MAX_MESSAGE_LENGTH = 2000
 MAX_HISTORY_ITEMS = 20
 
-SYSTEM_PROMPT = """你是知识消化平台的智能助手，可以帮用户管理笔记、RSS 订阅、待处理内容和知识问答。
+SYSTEM_PROMPT = """你是个人工作台的智能助手，可以帮用户管理笔记、RSS 订阅、待处理内容和知识问答。
 规则：
 1. 需要实时数据、系统状态，或会改变系统状态时，必须调用工具，不能编造。
 2. 查询类问题直接给简洁结果；操作完成后明确说明成功或失败。
@@ -809,7 +809,7 @@ def _fallback_plain_answer(
 ) -> str:
     """无需工具时的普通回答。"""
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": "你是知识消化平台的智能助手，用中文简洁自然地回复。"},
+        {"role": "system", "content": "你是个人工作台的智能助手，用中文简洁自然地回复。"},
         *_clean_history(history),
         {"role": "user", "content": user_message},
     ]

@@ -1,5 +1,5 @@
 /* ============================================================
-   知识消化平台 v1.0 · 抖音同款科技感
+   个人工作台 v1.0 · 抖音同款科技感
    - 深蓝渐变背景 + 10s 缓慢流动
    - 毛玻璃卡片 + 悬浮上浮
    - 数字滚动 + tab 淡入淡出
@@ -65,23 +65,28 @@ body {
   box-shadow: var(--shadow);
 }
 
-/* 顶部导航 */
-.topbar {
-  position: sticky;
-  top: 12px;
-  z-index: 10;
-  max-width: 1200px;
-  margin: 12px auto 0;
-  padding: 14px 22px;
+/* 左侧侧边栏（固定、全高、毛玻璃） */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 220px;
+  height: 100vh;
+  z-index: 50;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
+  flex-direction: column;
+  padding: 20px 14px;
+  box-sizing: border-box;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid var(--glass-border);
 }
 .brand {
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
+  text-align: center;
+  padding: 6px 4px 14px;
 }
 .gradient-text {
   background: linear-gradient(135deg, #06b6d4, #8b5cf6);
@@ -89,34 +94,72 @@ body {
   background-clip: text;
   color: transparent;
 }
-.nav { display: flex; gap: 4px; }
+/* 侧栏导航：纵向排列 */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  flex: 1;
+}
 .nav-btn {
-  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 12px 16px;
   border: 0;
-  color: var(--text-muted);
-  padding: 9px 16px;
   border-radius: 10px;
+  background: transparent;
+  color: #fff;
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
   font-family: inherit;
+  box-sizing: border-box;
+  position: relative;
   transition: all 0.2s ease;
+}
+.nav-ico {
+  font-size: 16px;
+  line-height: 1;
+  width: 20px;
+  text-align: center;
 }
 .nav-btn:hover {
   background: var(--glass-bg-hi);
-  color: var(--text);
+  color: #fff;
 }
 .nav-btn.active {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   color: #fff;
   box-shadow: 0 4px 12px rgba(6, 182, 212, 0.4);
 }
+.nav-btn.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: #fff;
+}
+/* 侧栏底部版本号 */
+.sidebar-version {
+  margin-top: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px 0 2px;
+}
 
-/* 主体容器 */
+/* 主体容器：让出左侧侧边栏并在剩余空间内居中 */
 .main {
-  max-width: 1200px;
-  margin: 24px auto 60px;
-  padding: 0 20px;
+  max-width: 1400px;
+  margin: 24px auto 60px max(220px, calc((100vw - 1400px) / 2));
+  padding: 0 32px;
+  box-sizing: border-box;
 }
 .section-title {
   font-size: 16px;
@@ -307,9 +350,7 @@ body {
 @media (max-width: 768px) {
   .cards,
   .cards.actions { grid-template-columns: 1fr; }
-  .topbar { padding: 12px 16px; }
   .main { padding: 0 16px; }
-  .nav { width: 100%; overflow-x: auto; }
 }
 
 /* 滚动条美化 */
