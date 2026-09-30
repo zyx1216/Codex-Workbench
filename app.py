@@ -109,7 +109,7 @@ class NoteExportRequest(BaseModel):
 
 
 class NoteUpdateRequest(BaseModel):
-    """笔记更新请求体：标题、正文、标签、分类及会议字段。"""
+    """笔记更新请求体：正文、标签、分类、会议字段及关联任务。"""
 
     title: str = ""
     content: str = ""
@@ -119,6 +119,7 @@ class NoteUpdateRequest(BaseModel):
     meeting_time: str | None = None
     meeting_attendees: str | None = None
     meeting_topic: str | None = None
+    task_ids: list[int] | None = None
 
 
 class RssSourceRequest(BaseModel):
@@ -166,6 +167,7 @@ class TaskCreateRequest(BaseModel):
     priority: str = "中"
     due_date: str | None = None
     note_id: int | None = None
+    note_ids: list[int] = []
 
 
 class TaskUpdateRequest(BaseModel):
@@ -176,6 +178,21 @@ class TaskUpdateRequest(BaseModel):
     priority: str | None = None
     due_date: str | None = None
     note_id: int | None = None
+    note_ids: list[int] | None = None
+
+
+class TaskReorderRequest(BaseModel):
+    """任务拖拽排序请求体。"""
+
+    ordered_ids: list[int]
+
+
+class CompleteTaskNoteRequest(BaseModel):
+    """任务完成并生成笔记请求体。"""
+
+    title: str = ""
+    content: str = ""
+    category: str | None = None
 
 
 class ScheduleCreateRequest(BaseModel):
@@ -659,9 +676,16 @@ def update_note(note_id: int, payload: NoteUpdateRequest, db: Session = Depends(
             meeting_time=payload.meeting_time if payload.meeting_time is not None else note_service._UNSET,
             meeting_attendees=payload.meeting_attendees if payload.meeting_attendees is not None else note_service._UNSET,
             meeting_topic=payload.meeting_topic if payload.meeting_topic is not None else note_service._UNSET,
+            task_ids=(
+                payload.task_ids
+                if "task_ids" in payload.model_fields_set
+                else note_service._UNSET
+            ),
         )
     except note_service.NoteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        return fail(str(exc))
 
     data = note_service.serialize_note(note)
     message = "笔记已更新"
@@ -881,6 +905,7 @@ def create_user_task(payload: TaskCreateRequest, db: Session = Depends(get_db)):
             payload.priority,
             payload.due_date,
             payload.note_id,
+            payload.note_ids,
         )
     except task_service.TaskError as exc:
         return fail(str(exc))
@@ -904,14 +929,55 @@ def get_user_task_stats(db: Session = Depends(get_db)):
 def list_user_tasks(
     category: str | None = None,
     completed: bool | None = None,
+    keyword: str = "",
     db: Session = Depends(get_db),
 ):
-    """查询任务列表，可按分类和完成状态筛选。"""
+    """查询任务列表，可按分类、完成状态和关键词筛选。"""
     try:
-        items = task_service.list_tasks(db, category=category, completed=completed)
+        items = task_service.list_tasks(
+            db, category=category, completed=completed, keyword=keyword
+        )
     except task_service.TaskError as exc:
         return fail(str(exc))
     return ok([task_service.serialize_task(task) for task in items])
+
+
+@app.put("/api/tasks/reorder")
+def reorder_user_tasks(payload: TaskReorderRequest, db: Session = Depends(get_db)):
+    """保存未完成任务的拖拽顺序。"""
+    try:
+        task_service.reorder_tasks(db, payload.ordered_ids)
+    except task_service.TaskError as exc:
+        return fail(str(exc))
+    return ok(None, message="任务顺序已保存")
+
+
+@app.post("/api/tasks/{task_id}/complete-with-note")
+def complete_task_with_note(
+    task_id: int,
+    payload: CompleteTaskNoteRequest,
+    db: Session = Depends(get_db),
+):
+    """原子完成：创建笔记、标记任务完成并建立双向关联。"""
+    try:
+        task, note = task_service.complete_task_with_note(
+            db,
+            task_id,
+            payload.title,
+            payload.content,
+            payload.category,
+        )
+    except task_service.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except task_service.TaskError as exc:
+        return fail(str(exc))
+    return ok(
+        {
+            "task": task_service.serialize_task(task),
+            "note": note_service.serialize_note(note),
+        },
+        message="任务已完成并生成笔记",
+    )
 
 
 @app.get("/api/tasks/{task_id}")

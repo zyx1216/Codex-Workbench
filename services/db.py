@@ -3,6 +3,8 @@
 数据库连接：engine、SessionLocal、init_db()、get_db() FastAPI 依赖。
 """
 
+import json
+
 import config
 from models.models import Base
 from sqlalchemy import create_engine, event, inspect, text
@@ -87,6 +89,101 @@ def _ensure_notes_columns() -> None:
             connection.execute(text(
                 "ALTER TABLE notes ADD COLUMN meeting_topic VARCHAR(300)"
             ))
+        # v2.12 任务关联字段
+        if "task_ids" not in existing:
+            connection.execute(text(
+                "ALTER TABLE notes ADD COLUMN task_ids TEXT "
+                "NOT NULL DEFAULT '[]'"
+            ))
+
+
+def _ensure_task_columns() -> None:
+    """给旧版数据库补任务关联和排序字段；过程幂等。"""
+    inspector = inspect(engine)
+    existing = {column["name"] for column in inspector.get_columns("tasks")}
+
+    with engine.begin() as connection:
+        if "note_ids" not in existing:
+            connection.execute(text(
+                "ALTER TABLE tasks ADD COLUMN note_ids TEXT "
+                "NOT NULL DEFAULT '[]'"
+            ))
+        if "sort_order" not in existing:
+            connection.execute(text(
+                "ALTER TABLE tasks ADD COLUMN sort_order INTEGER "
+                "NOT NULL DEFAULT 0"
+            ))
+
+
+def _parse_migration_ids(raw: object) -> list[int]:
+    """迁移时解析 JSON ID，损坏数据按空数组处理。"""
+    try:
+        values = json.loads(raw) if raw else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(values, list):
+        return []
+    result: list[int] = []
+    for value in values:
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in result:
+            result.append(item_id)
+    return result
+
+
+def _backfill_task_note_links() -> None:
+    """把旧 note_id 补进双向 JSON 字段；重复执行不产生重复关联。"""
+    with engine.begin() as connection:
+        note_rows = connection.execute(text(
+            "SELECT id, task_ids FROM notes"
+        )).mappings().all()
+        note_ids_set = {int(row["id"]) for row in note_rows}
+        note_task_ids: dict[int, list[int]] = {
+            int(row["id"]): _parse_migration_ids(row["task_ids"])
+            for row in note_rows
+        }
+
+        task_rows = connection.execute(text(
+            "SELECT id, note_id, note_ids FROM tasks"
+        )).mappings().all()
+        for row in task_rows:
+            task_id = int(row["id"])
+            note_ids = [
+                note_id for note_id in _parse_migration_ids(row["note_ids"])
+                if note_id in note_ids_set
+            ]
+            legacy_note_id = int(row["note_id"]) if row["note_id"] else None
+            if not note_ids and legacy_note_id in note_ids_set:
+                note_ids = [legacy_note_id]
+            note_ids = note_ids[:3]
+            for note_id in note_ids:
+                links = note_task_ids.setdefault(note_id, [])
+                if task_id not in links:
+                    links.append(task_id)
+            connection.execute(
+                text(
+                    "UPDATE tasks SET note_ids = :note_ids, note_id = :note_id "
+                    "WHERE id = :task_id"
+                ),
+                {
+                    "note_ids": json.dumps(note_ids, ensure_ascii=False),
+                    "note_id": note_ids[0] if note_ids else None,
+                    "task_id": task_id,
+                },
+            )
+
+        for note_id, task_ids in note_task_ids.items():
+            connection.execute(
+                text("UPDATE notes SET task_ids = :task_ids WHERE id = :note_id"),
+                {
+                    "task_ids": json.dumps(task_ids[:3], ensure_ascii=False),
+                    "note_id": note_id,
+                },
+            )
+
 
 
 # async_tasks 新表结构（SQLite 无法直接改 CHECK，只能整表重建）
@@ -233,6 +330,8 @@ def init_db() -> None:
     _migrate_v24_async_tasks()
     Base.metadata.create_all(bind=engine)
     _ensure_notes_columns()
+    _ensure_task_columns()
+    _backfill_task_note_links()
     _rebuild_async_tasks_if_needed()
     _ensure_rss_columns()
     _rebuild_pending_items_if_needed()

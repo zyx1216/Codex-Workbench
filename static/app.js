@@ -198,6 +198,13 @@ async function drawTrendChart() {
 /* ============ 日常/工作任务状态 ============ */
 let taskFilters = {category: "", completed: ""};
 let editingTaskId = null;
+let currentUserTasks = [];
+let taskNoteSelection = new Map();
+let noteTaskSelection = new Map();
+let taskNoteSearchTimer = null;
+let noteTaskSearchTimer = null;
+let completingTaskId = null;
+let draggedTaskId = null;
 
 /* ============ 链接 / 手动粘贴弹窗 ============ */
 let inputMode = "url";
@@ -694,6 +701,27 @@ function buildNoteCard(note) {
   relatedSection.appendChild(relatedList);
   detail.appendChild(relatedSection);
 
+  if (note.task_count > 0) {
+    const taskSection = document.createElement("div");
+    taskSection.className = "related-section note-task-related";
+    taskSection.innerHTML = `<div class="related-title">✅ 关联任务</div>`;
+    const taskList = document.createElement("div");
+    taskList.className = "related-list";
+    (note.task_summaries || []).forEach((task) => {
+      const taskButton = document.createElement("button");
+      taskButton.type = "button";
+      taskButton.className = "note-task-link";
+      taskButton.textContent = `${task.completed ? "✓ " : ""}${task.title || `任务 ${task.id}`}`;
+      taskButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openTaskFromNoteId(task.id);
+      });
+      taskList.appendChild(taskButton);
+    });
+    taskSection.appendChild(taskList);
+    detail.appendChild(taskSection);
+  }
+
   const detailActions = document.createElement("div");
   detailActions.className = "note-detail-actions";
   if (note.original_url) {
@@ -763,7 +791,11 @@ function buildNoteCard(note) {
 
   delBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    if (!confirm("确定删除这篇笔记吗？删除后无法恢复。")) return;
+    const linkedCount = Number(note.task_count || 0);
+    const prompt = linkedCount > 0
+      ? `该笔记关联了${linkedCount}个任务，删除后关联将解除。\n确定删除这篇笔记吗？删除后无法恢复。`
+      : "确定删除这篇笔记吗？删除后无法恢复。";
+    if (!confirm(prompt)) return;
     try {
       await fetchJson(`/api/notes/${note.id}`, { method: "DELETE" });
       card.remove();
@@ -1112,11 +1144,16 @@ async function fillNoteCategorySelect(currentCategory = "默认") {
 
 async function openCreateNoteModal() {
   editingNote = null;
+  noteTaskSelection.clear();
   $("#edit-modal-title").textContent = "📝 新建笔记";
   $("#edit-modal-error").hidden = true;
   $("#edit-title").value = "";
   $("#edit-content").value = "";
   $("#edit-tags").value = "";
+  $("#note-task-field").hidden = true;
+  $("#note-task-search").value = "";
+  hideLinkResults($("#note-task-results"));
+  renderNoteTaskChips();
   await fillNoteCategorySelect("默认");
   $("#edit-modal").hidden = false;
   $("#edit-title").focus();
@@ -1139,6 +1176,12 @@ async function openEditModal(note) {
   $("#edit-title").value = note.title || "";
   $("#edit-content").value = note.content || "";
   $("#edit-tags").value = tagsToText(note.tags || []);
+  noteTaskSelection.clear();
+  (note.task_summaries || []).forEach((task) => noteTaskSelection.set(task.id, task));
+  $("#note-task-field").hidden = false;
+  $("#note-task-search").value = "";
+  hideLinkResults($("#note-task-results"));
+  renderNoteTaskChips();
   await fillNoteCategorySelect(note.category || "默认");
 
   $("#edit-modal").hidden = false;
@@ -1147,6 +1190,7 @@ async function openEditModal(note) {
 function closeEditModal() {
   $("#edit-modal").hidden = true;
   editingNote = null;
+  hideLinkResults($("#note-task-results"));
 }
 
 async function saveEdit() {
@@ -1158,6 +1202,9 @@ async function saveEdit() {
     tags: parseTagsText($("#edit-tags").value),
     category: $("#edit-category").value || "默认",
   };
+  if (editingNote) {
+    payload.task_ids = Array.from(noteTaskSelection.keys());
+  }
   if (!payload.title) {
     const errorBox = $("#edit-modal-error");
     errorBox.textContent = "笔记标题不能为空";
@@ -2719,33 +2766,162 @@ function bindTaskCenter() {
   });
 }
 
-/* ============ 日常/工作任务 ============ */
-async function loadTaskNoteOptions() {
-  const select = $("#task-form-note");
-  const current = select.value;
-  try {
-    const body = await fetchJson("/api/notes?size=200");
-    select.innerHTML = '<option value="">不关联</option>';
-    (body.data.items || []).forEach((note) => {
-      const option = document.createElement("option");
-      option.value = note.id;
-      option.textContent = note.title || `笔记 ${note.id}`;
-      select.appendChild(option);
+/* ============ 日常/工作任务与关联选择 ============ */
+function renderLinkChips(container, selection, onRemove) {
+  container.innerHTML = "";
+  Array.from(selection.values()).forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = "link-chip";
+    chip.textContent = item.title || `#${item.id}`;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "link-chip-close";
+    close.textContent = "×";
+    close.title = "取消关联";
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onRemove(item.id);
     });
-    select.value = current;
-  } catch (_) {
-    select.innerHTML = '<option value="">不关联</option>';
+    chip.appendChild(close);
+    container.appendChild(chip);
+  });
+}
+
+function renderTaskNoteChips() {
+  renderLinkChips($("#task-note-chips"), taskNoteSelection, (id) => {
+    taskNoteSelection.delete(id);
+    renderTaskNoteChips();
+  });
+}
+
+function renderNoteTaskChips() {
+  renderLinkChips($("#note-task-chips"), noteTaskSelection, (id) => {
+    noteTaskSelection.delete(id);
+    renderNoteTaskChips();
+  });
+}
+
+function hideLinkResults(box) {
+  box.hidden = true;
+  box.innerHTML = "";
+}
+
+function renderTaskNoteResults(items) {
+  const box = $("#task-note-results");
+  box.innerHTML = "";
+  if (taskNoteSelection.size >= 3) {
+    box.textContent = "最多关联 3 篇笔记";
+    box.hidden = false;
+    return;
   }
+  const candidates = items.filter((note) => !taskNoteSelection.has(note.id));
+  if (!candidates.length) {
+    box.textContent = "没有匹配的笔记";
+    box.hidden = false;
+    return;
+  }
+  candidates.forEach((note) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link-result-item";
+    button.innerHTML = `<strong>${escapeHtml(note.title || `笔记 ${note.id}`)}</strong><span>${escapeHtml(note.category || "默认")}</span>`;
+    button.addEventListener("click", () => {
+      taskNoteSelection.set(note.id, note);
+      renderTaskNoteChips();
+      $("#task-note-search").value = "";
+      hideLinkResults(box);
+    });
+    box.appendChild(button);
+  });
+  box.hidden = false;
+}
+
+async function searchTaskNotes() {
+  const keyword = $("#task-note-search").value.trim();
+  const box = $("#task-note-results");
+  if (!keyword) {
+    hideLinkResults(box);
+    return;
+  }
+  try {
+    const body = await fetchJson(`/api/notes?keyword=${encodeURIComponent(keyword)}&size=10`);
+    renderTaskNoteResults(body.data.items || []);
+  } catch (err) {
+    box.textContent = err.message || "笔记搜索失败";
+    box.hidden = false;
+  }
+}
+
+function renderNoteTaskResults(items) {
+  const box = $("#note-task-results");
+  box.innerHTML = "";
+  if (noteTaskSelection.size >= 3) {
+    box.textContent = "最多关联 3 个任务";
+    box.hidden = false;
+    return;
+  }
+  const candidates = items.filter((task) => !noteTaskSelection.has(task.id));
+  if (!candidates.length) {
+    box.textContent = "没有匹配的未完成任务";
+    box.hidden = false;
+    return;
+  }
+  candidates.forEach((task) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link-result-item";
+    button.innerHTML = `<strong>${escapeHtml(task.title || `任务 ${task.id}`)}</strong><span>${escapeHtml(task.category || "日常")}</span>`;
+    button.addEventListener("click", () => {
+      noteTaskSelection.set(task.id, task);
+      renderNoteTaskChips();
+      $("#note-task-search").value = "";
+      hideLinkResults(box);
+    });
+    box.appendChild(button);
+  });
+  box.hidden = false;
+}
+
+async function searchNoteTasks() {
+  const keyword = $("#note-task-search").value.trim();
+  const box = $("#note-task-results");
+  if (!keyword) {
+    hideLinkResults(box);
+    return;
+  }
+  try {
+    const body = await fetchJson(`/api/tasks?completed=false&keyword=${encodeURIComponent(keyword)}`);
+    renderNoteTaskResults(body.data || []);
+  } catch (err) {
+    box.textContent = err.message || "任务搜索失败";
+    box.hidden = false;
+  }
+}
+
+function bindLinkPickers() {
+  $("#task-note-search").addEventListener("input", () => {
+    clearTimeout(taskNoteSearchTimer);
+    taskNoteSearchTimer = setTimeout(searchTaskNotes, 300);
+  });
+  $("#note-task-search").addEventListener("input", () => {
+    clearTimeout(noteTaskSearchTimer);
+    noteTaskSearchTimer = setTimeout(searchNoteTasks, 300);
+  });
+  renderTaskNoteChips();
+  renderNoteTaskChips();
 }
 
 function resetTaskForm() {
   editingTaskId = null;
+  taskNoteSelection.clear();
   $("#task-modal-title").textContent = "新增任务";
   $("#task-form-title").value = "";
   $("#task-form-category").value = "日常";
   $("#task-form-priority").value = "中";
   $("#task-form-due-date").value = "";
-  $("#task-form-note").value = "";
+  $("#task-note-search").value = "";
+  hideLinkResults($("#task-note-results"));
+  renderTaskNoteChips();
   $("#task-modal-error").hidden = true;
 }
 
@@ -2758,7 +2934,8 @@ function openTaskModal(task = null) {
     $("#task-form-category").value = task.category || "日常";
     $("#task-form-priority").value = task.priority || "中";
     $("#task-form-due-date").value = task.due_date || "";
-    $("#task-form-note").value = task.note_id ? String(task.note_id) : "";
+    (task.note_summaries || []).forEach((note) => taskNoteSelection.set(note.id, note));
+    renderTaskNoteChips();
   }
   $("#task-modal").hidden = false;
   $("#task-form-title").focus();
@@ -2767,6 +2944,7 @@ function openTaskModal(task = null) {
 function closeTaskModal() {
   $("#task-modal").hidden = true;
   editingTaskId = null;
+  hideLinkResults($("#task-note-results"));
 }
 
 async function saveTaskForm() {
@@ -2775,7 +2953,7 @@ async function saveTaskForm() {
     category: $("#task-form-category").value,
     priority: $("#task-form-priority").value,
     due_date: $("#task-form-due-date").value || null,
-    note_id: $("#task-form-note").value ? Number($("#task-form-note").value) : null,
+    note_ids: Array.from(taskNoteSelection.keys()),
   };
   const errorBox = $("#task-modal-error");
   errorBox.hidden = true;
@@ -2812,7 +2990,8 @@ async function loadUserTasks() {
   const url = `/api/tasks${params.toString() ? `?${params}` : ""}`;
   try {
     const body = await fetchJson(url);
-    renderUserTasks(body.data || []);
+    currentUserTasks = body.data || [];
+    renderUserTasks(currentUserTasks);
   } catch (err) {
     $("#user-task-list").innerHTML = "";
     const empty = document.createElement("div");
@@ -2837,7 +3016,31 @@ function renderUserTasks(tasks) {
 
 function buildUserTaskCard(task) {
   const card = document.createElement("div");
+  card.dataset.taskId = task.id;
   card.className = `card glass user-task-card ${task.completed ? "is-completed" : ""} ${task.is_overdue ? "is-overdue" : ""}`;
+
+  if (!task.completed) {
+    const handle = document.createElement("button");
+    handle.type = "button";
+    handle.className = "task-drag-handle";
+    handle.textContent = "⋮⋮";
+    handle.title = "拖拽调整顺序";
+    handle.draggable = true;
+    handle.addEventListener("dragstart", (event) => {
+      draggedTaskId = task.id;
+      card.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", String(task.id));
+    });
+    handle.addEventListener("dragend", () => {
+      draggedTaskId = null;
+      card.classList.remove("is-dragging");
+      $$(".user-task-card").forEach((item) => {
+        item.classList.remove("drag-over-before", "drag-over-after");
+      });
+    });
+    card.appendChild(handle);
+  }
 
   const check = document.createElement("input");
   check.type = "checkbox";
@@ -2861,13 +3064,50 @@ function buildUserTaskCard(task) {
     <span class="todo-priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span>
     <span class="todo-category">${escapeHtml(task.category)}</span>
     <span class="todo-due ${task.is_overdue ? "overdue" : ""}">${task.due_date ? `📅 ${escapeHtml(task.due_date)}` : "无截止日期"}</span>
-    ${task.note_title ? `<span class="todo-note">📎 ${escapeHtml(task.note_title)}</span>` : ""}
   `;
-  main.appendChild(meta);
+  if (task.note_count > 0) {
+    const noteCount = document.createElement("button");
+    noteCount.type = "button";
+    noteCount.className = "todo-note task-note-count";
+    noteCount.textContent = `📎 ${task.note_count}篇`;
+    noteCount.title = "展开关联笔记";
+    const noteList = document.createElement("div");
+    noteList.className = "task-note-list";
+    noteList.hidden = true;
+    (task.note_summaries || []).forEach((note) => {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "task-note-link";
+      link.textContent = note.title || `笔记 ${note.id}`;
+      link.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        await goToNote(note.id);
+      });
+      noteList.appendChild(link);
+    });
+    noteCount.addEventListener("click", (event) => {
+      event.stopPropagation();
+      noteList.hidden = !noteList.hidden;
+    });
+    meta.appendChild(noteCount);
+    main.appendChild(meta);
+    main.appendChild(noteList);
+  } else {
+    main.appendChild(meta);
+  }
   card.appendChild(main);
 
   const actions = document.createElement("div");
   actions.className = "user-task-actions";
+  if (!task.completed) {
+    const completeNoteBtn = makeButton("icon-btn", "📝");
+    completeNoteBtn.title = "完成并生成笔记";
+    completeNoteBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openCompleteTaskNoteModal(task);
+    });
+    actions.appendChild(completeNoteBtn);
+  }
   const editBtn = makeButton("icon-btn", "✏️");
   editBtn.title = "编辑";
   editBtn.addEventListener("click", (event) => {
@@ -2893,7 +3133,104 @@ function buildUserTaskCard(task) {
   actions.appendChild(deleteBtn);
   card.appendChild(actions);
 
+  if (!task.completed) {
+    card.addEventListener("dragover", (event) => {
+      if (!draggedTaskId || draggedTaskId === task.id) return;
+      event.preventDefault();
+      const before = event.clientY < card.getBoundingClientRect().top + card.offsetHeight / 2;
+      card.classList.toggle("drag-over-before", before);
+      card.classList.toggle("drag-over-after", !before);
+    });
+    card.addEventListener("dragleave", () => {
+      card.classList.remove("drag-over-before", "drag-over-after");
+    });
+    card.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      if (!draggedTaskId || draggedTaskId === task.id) return;
+      const before = event.clientY < card.getBoundingClientRect().top + card.offsetHeight / 2;
+      const draggedId = draggedTaskId;
+      draggedTaskId = null;
+      await dropTaskAt(draggedId, task.id, before);
+    });
+  }
+
   return card;
+}
+
+async function dropTaskAt(draggedId, targetId, before) {
+  const list = $("#user-task-list");
+  const dragged = list.querySelector(`.user-task-card[data-task-id="${draggedId}"]`);
+  const target = list.querySelector(`.user-task-card[data-task-id="${targetId}"]`);
+  if (!dragged || !target) return;
+  const previous = [...currentUserTasks];
+  list.insertBefore(dragged, before ? target : target.nextSibling);
+  const orderedIds = Array.from(list.querySelectorAll(".user-task-card:not(.is-completed)"))
+    .map((card) => Number(card.dataset.taskId));
+  try {
+    await fetchJson("/api/tasks/reorder", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ordered_ids: orderedIds}),
+    });
+    await loadUserTasks();
+  } catch (err) {
+    renderUserTasks(previous);
+    toast(err.message || "任务排序保存失败", "error");
+  }
+}
+
+function openCompleteTaskNoteModal(task) {
+  completingTaskId = task.id;
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  const timeText = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  $("#task-complete-note-task").textContent = `任务：${task.title}`;
+  $("#task-complete-note-title").value = task.title || "";
+  $("#task-complete-note-content").value = `完成了任务「${task.title}」，完成时间：${timeText}`;
+  $("#task-complete-note-category").value = task.category || "日常";
+  $("#task-complete-note-error").hidden = true;
+  $("#task-complete-note-modal").hidden = false;
+  $("#task-complete-note-title").focus();
+}
+
+function closeCompleteTaskNoteModal() {
+  completingTaskId = null;
+  $("#task-complete-note-modal").hidden = true;
+}
+
+async function saveCompleteTaskNote() {
+  if (!completingTaskId) return;
+  const errorBox = $("#task-complete-note-error");
+  const payload = {
+    title: $("#task-complete-note-title").value.trim(),
+    content: $("#task-complete-note-content").value.trim(),
+    category: $("#task-complete-note-category").value,
+  };
+  errorBox.hidden = true;
+  if (!payload.title || !payload.content) {
+    errorBox.textContent = "请填写笔记标题和内容";
+    errorBox.hidden = false;
+    return;
+  }
+  const button = $("#btn-save-complete-note");
+  button.disabled = true;
+  try {
+    const body = await fetchJson(`/api/tasks/${completingTaskId}/complete-with-note`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    closeCompleteTaskNoteModal();
+    toast(body.message, "success");
+    await loadUserTasks();
+    loadStats();
+    loadHomeTaskPanels();
+  } catch (err) {
+    errorBox.textContent = err.message || "保存失败";
+    errorBox.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function toggleTaskDone(task, check) {
@@ -2947,6 +3284,7 @@ function renderDashTodayTasks(box, tasks, emptyText) {
       <span class="simple-task-meta">
         <span class="todo-priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span>
         <span class="${task.is_overdue ? "overdue" : ""}">${task.due_date ? escapeHtml(task.due_date) : "无截止"}</span>
+        ${task.note_count > 0 ? '<span class="todo-note">📎</span>' : ""}
       </span>`;
     info.querySelector(".simple-task-title").addEventListener("click", () => {
       document.querySelector('.nav-btn[data-tab="tasks"]').click();
@@ -2973,6 +3311,16 @@ async function loadHomeTaskPanels() {
   } catch (_) { /* 首页任务加载失败不打断主要内容 */ }
 }
 
+async function openTaskFromNoteId(taskId) {
+  document.querySelector('.nav-btn[data-tab="tasks"]').click();
+  try {
+    const body = await fetchJson(`/api/tasks/${taskId}`);
+    openTaskModal(body.data);
+  } catch (err) {
+    toast(err.message || "任务加载失败", "error");
+  }
+}
+
 function bindTaskPage() {
   $("#btn-add-user-task").addEventListener("click", () => openTaskModal());
   $("#task-modal-close").addEventListener("click", closeTaskModal);
@@ -2980,6 +3328,12 @@ function bindTaskPage() {
   $("#btn-save-user-task").addEventListener("click", saveTaskForm);
   $("#task-modal").addEventListener("click", (event) => {
     if (event.target === $("#task-modal")) closeTaskModal();
+  });
+  $("#task-complete-note-close").addEventListener("click", closeCompleteTaskNoteModal);
+  $("#btn-cancel-complete-note").addEventListener("click", closeCompleteTaskNoteModal);
+  $("#btn-save-complete-note").addEventListener("click", saveCompleteTaskNote);
+  $("#task-complete-note-modal").addEventListener("click", (event) => {
+    if (event.target === $("#task-complete-note-modal")) closeCompleteTaskNoteModal();
   });
   $("#task-form-title").addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveTaskForm();
@@ -4023,6 +4377,7 @@ function closeTopModal() {
     case "schedule-detail-modal": closeScheduleDetailModal(); break;
     case "schedule-form-modal": closeScheduleForm(); break;
     case "task-modal": closeTaskModal(); break;
+    case "task-complete-note-modal": closeCompleteTaskNoteModal(); break;
     case "upload-modal": closeUploadModal(); break;
     case "style-modal": closeStyleModal(); break;
     case "restore-confirm-modal": closeRestoreConfirm(); break;
@@ -4112,6 +4467,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindQaPage();
   bindTaskCenter();
   bindTaskPage();
+  bindLinkPickers();
   bindCalendarPage();
   bindMeetingModal();
   bindRipple();
@@ -4121,7 +4477,6 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSchedulerConfig();
   loadSchedulerLogs();
   loadVectorStats();
-  loadTaskNoteOptions();
   loadHomeTaskPanels();
   loadScheduleNoteOptions();
   loadHomeSchedules();

@@ -10,6 +10,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, object_session
 
 from models.models import Note, Task
+from services import link_service
 
 VALID_CATEGORIES = {"日常", "工作"}
 VALID_PRIORITIES = {"高", "中", "低"}
@@ -89,8 +90,10 @@ def create_task(
     priority: str = "中",
     due_date: Any = None,
     note_id: Any = None,
+    note_ids: Any = None,
+    sort_order: Any = None,
 ) -> Task:
-    """创建任务。"""
+    """创建任务；note_id 作为旧接口兼容，note_ids 为新的多关联字段。"""
     title = (title or "").strip()
     if not title:
         raise TaskError("任务标题不能为空")
@@ -99,18 +102,32 @@ def create_task(
     if priority not in VALID_PRIORITIES:
         raise TaskError("任务优先级只能是高、中或低")
 
+    initial_note_ids = link_service.normalize_ids(note_ids)
+    if not initial_note_ids and note_id not in (None, ""):
+        initial_note_ids = link_service.normalize_ids([note_id])
+    if sort_order is None:
+        max_order = session.scalar(select(func.max(Task.sort_order)))
+        sort_order = int(max_order if max_order is not None else -1) + 1
+
     task = Task(
         title=title,
         category=category,
         priority=priority,
         due_date=_normalize_due_date(due_date),
         completed=False,
-        note_id=_validate_note(session, note_id),
+        note_ids="[]",
+        sort_order=int(sort_order),
         created_at=datetime.now(),
         completed_at=None,
     )
     session.add(task)
-    session.commit()
+    session.flush()
+    try:
+        link_service.set_task_notes(session, task, initial_note_ids)
+        session.commit()
+    except link_service.LinkError as exc:
+        session.rollback()
+        raise TaskError(str(exc)) from exc
     session.refresh(task)
     return task
 
@@ -119,10 +136,27 @@ def list_tasks(
     session: Session,
     category: str | None = None,
     completed: bool | None = None,
+    keyword: str = "",
 ) -> list[Task]:
-    """查询任务列表。"""
+    """查询任务列表；用户任务页按拖拽顺序，首页仍使用原排序函数。"""
     statement = _base_filters(select(Task), category, completed)
-    return list(session.scalars(_ordered(statement)).all())
+    items = list(session.scalars(statement).all())
+    keyword = (keyword or "").strip().lower()
+    if keyword:
+        items = [
+            task for task in items
+            if keyword in (task.title or "").lower()
+            or keyword in (task.category or "").lower()
+            or keyword in (task.priority or "").lower()
+        ]
+    items.sort(key=lambda task: (
+        1 if task.completed else 0,
+        0 if task.completed else task.sort_order,
+        datetime.max - (task.completed_at or task.created_at or datetime.min)
+        if task.completed else 0,
+        -task.id,
+    ))
+    return items
 
 
 def get_task(session: Session, task_id: int) -> Task:
@@ -154,8 +188,19 @@ def update_task(session: Session, task_id: int, **kwargs: Any) -> Task:
         task.priority = priority
     if "due_date" in kwargs:
         task.due_date = _normalize_due_date(kwargs.get("due_date"))
-    if "note_id" in kwargs:
-        task.note_id = _validate_note(session, kwargs.get("note_id"))
+    if "note_ids" in kwargs:
+        try:
+            link_service.set_task_notes(session, task, kwargs.get("note_ids") or [])
+        except link_service.LinkError as exc:
+            raise TaskError(str(exc)) from exc
+    elif "note_id" in kwargs:
+        old_note_id = kwargs.get("note_id")
+        try:
+            link_service.set_task_notes(
+                session, task, [old_note_id] if old_note_id not in (None, "") else []
+            )
+        except link_service.LinkError as exc:
+            raise TaskError(str(exc)) from exc
 
     session.commit()
     session.refresh(task)
@@ -185,10 +230,89 @@ def uncomplete_task(session: Session, task_id: int) -> Task:
 
 
 def delete_task(session: Session, task_id: int) -> None:
-    """删除任务。"""
+    """删除任务并解除笔记侧关联。"""
     task = get_task(session, task_id)
+    link_service.set_task_notes(session, task, [])
     session.delete(task)
     session.commit()
+
+
+def reorder_tasks(session: Session, ordered_ids: list[int]) -> None:
+    """按传入顺序替换未完成任务在全局未完成序列中的位置。"""
+    ordered_ids = link_service.normalize_ids(ordered_ids)
+    if not ordered_ids:
+        raise TaskError("请选择要排序的任务")
+    tasks = list(session.scalars(select(Task)).all())
+    task_map = {task.id: task for task in tasks}
+    missing = [task_id for task_id in ordered_ids if task_id not in task_map]
+    if missing:
+        raise TaskError("包含不存在的任务")
+    completed_ids = [task_id for task_id in ordered_ids if task_map[task_id].completed]
+    if completed_ids:
+        raise TaskError("已完成任务不能参与拖拽排序")
+
+    unfinished = sorted(
+        (task for task in tasks if not task.completed),
+        key=lambda task: (task.sort_order, task.id),
+    )
+    positions = [
+        index for index, task in enumerate(unfinished)
+        if task.id in ordered_ids
+    ]
+    ordered_tasks = [task_map[task_id] for task_id in ordered_ids]
+    for index, position in enumerate(positions):
+        unfinished[position] = ordered_tasks[index]
+    for index, task in enumerate(unfinished):
+        task.sort_order = index
+    session.commit()
+
+
+def complete_task_with_note(
+    session: Session,
+    task_id: int,
+    title: str,
+    content: str,
+    category: str | None = None,
+) -> tuple[Task, Note]:
+    """原子完成：创建笔记、标记任务完成并建立双向关联。"""
+    from services import note_service
+
+    task = get_task(session, task_id)
+    if task.completed:
+        raise TaskError("任务已完成，不能重复生成完成笔记")
+    title = (title or task.title or "").strip()
+    content = (content or "").strip()
+    if not title:
+        raise TaskError("笔记标题不能为空")
+    if not content:
+        raise TaskError("笔记内容不能为空")
+    category = category or task.category
+    if category not in VALID_CATEGORIES:
+        raise TaskError("任务分类只能是日常或工作")
+
+    try:
+        note = note_service.create_note(
+            session=session,
+            title=title,
+            content=content,
+            source="任务完成",
+            category=category,
+            commit=False,
+        )
+        session.flush()
+        link_service.set_task_notes(session, task, [note.id])
+        task.completed = True
+        task.completed_at = datetime.now()
+        session.commit()
+    except (link_service.LinkError, ValueError) as exc:
+        session.rollback()
+        raise TaskError(str(exc)) from exc
+
+    session.refresh(task)
+    session.refresh(note)
+    note_service.index_note(note)
+    note_service.enqueue_quality_evaluation(note.id)
+    return task, note
 
 
 def get_today_tasks(session: Session) -> list[Task]:
@@ -231,24 +355,32 @@ def get_stats(session: Session) -> dict[str, int]:
 
 
 def serialize_task(task: Task) -> dict[str, Any]:
-    """任务转前端字典。"""
+    """任务转前端字典，并补充关联笔记摘要。"""
+    note_ids = link_service.note_ids_for_task(task)
     current_session = object_session(task)
 
-    def read_note_title() -> str | None:
+    def load_notes() -> list[Note]:
         """优先复用当前会话；脱离会话时临时打开一个连接。"""
-        if task.note_id is None:
-            return None
         if current_session is not None:
-            note = current_session.get(Note, task.note_id)
-            return note.title if note is not None else None
+            return [
+                note for note_id in note_ids
+                if (note := current_session.get(Note, note_id)) is not None
+            ]
 
         from services.db import SessionLocal
 
         with SessionLocal() as db:
-            note = db.get(Note, task.note_id)
-            return note.title if note is not None else None
+            return [
+                note for note_id in note_ids
+                if (note := db.get(Note, note_id)) is not None
+            ]
 
-    note_title = read_note_title()
+    notes = load_notes()
+    note_summaries = [
+        {"id": note.id, "title": note.title, "category": note.category}
+        for note in notes
+    ]
+    note_title = notes[0].title if notes else None
     is_overdue = bool(
         not task.completed
         and task.due_date is not None
@@ -264,6 +396,10 @@ def serialize_task(task: Task) -> dict[str, Any]:
         "completed": task.completed,
         "note_id": task.note_id,
         "note_title": note_title,
+        "note_ids": [note.id for note in notes],
+        "note_summaries": note_summaries,
+        "note_count": len(notes),
+        "sort_order": task.sort_order,
         "is_overdue": is_overdue,
         "created_at": task.created_at.isoformat(timespec="seconds") if task.created_at else None,
         "completed_at": task.completed_at.isoformat(timespec="seconds") if task.completed_at else None,

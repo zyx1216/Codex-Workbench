@@ -39,6 +39,12 @@ class Note(Base):
         default="[]",
         comment="向量相似度关联笔记 ID JSON 字符串",
     )
+    task_ids = Column(
+        Text,
+        nullable=False,
+        default="[]",
+        comment="关联任务 ID JSON 字符串",
+    )
     quality_score = Column(Float, nullable=True, comment="AI 改写质量评分")
     category = Column(String(50), nullable=False, default="默认", comment="分类")
     note_type = Column(String(10), nullable=False, default="普通", comment="笔记类型：普通/会议")
@@ -156,7 +162,14 @@ class Task(Base):
     priority = Column(String(10), nullable=False, default="中", comment="任务优先级")
     due_date = Column(DateTime, nullable=True, comment="截止日期")
     completed = Column(Boolean, nullable=False, default=False, comment="是否完成")
-    note_id = Column(Integer, nullable=True, comment="关联笔记 ID")
+    note_id = Column(Integer, nullable=True, comment="兼容旧版的第一个关联笔记 ID")
+    note_ids = Column(
+        Text,
+        nullable=False,
+        default="[]",
+        comment="关联笔记 ID JSON 字符串",
+    )
+    sort_order = Column(Integer, nullable=False, default=0, comment="未完成任务排序值")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     completed_at = Column(DateTime, nullable=True, comment="完成时间")
 

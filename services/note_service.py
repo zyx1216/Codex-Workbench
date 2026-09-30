@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import object_session
 
 from models.models import Note, PendingItem
-from services import vector_service
+from services import link_service, vector_service
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +198,7 @@ def create_note(
         source=source or "手动输入",
         tags=json.dumps(clean_tag_list(tags), ensure_ascii=False),
         related_ids="[]",
+        task_ids="[]",
         quality_score=None,
         category=category or "默认",
         note_type=note_type,
@@ -268,8 +269,9 @@ def update_note(
     meeting_time: Any = _UNSET,
     meeting_attendees: Any = _UNSET,
     meeting_topic: Any = _UNSET,
+    task_ids: Any = _UNSET,
 ) -> Note:
-    """更新标题、正文、标签、分类及会议字段；会议字段未传保持原值。"""
+    """更新标题、正文、标签、分类、会议字段及关联任务；未传字段保持原值。"""
     note = get_note_by_id(session, note_id)
     note.title = (title or "").strip() or "无标题"
     note.content = content or ""
@@ -287,6 +289,11 @@ def update_note(
     if meeting_topic is not _UNSET:
         value = str(meeting_topic or "").strip()
         note.meeting_topic = value or None
+    if task_ids is not _UNSET:
+        try:
+            link_service.set_note_tasks(session, note, task_ids or [])
+        except link_service.LinkError as exc:
+            raise ValueError(str(exc)) from exc
     note.updated_at = datetime.now()
     session.commit()
     session.refresh(note)
@@ -451,8 +458,9 @@ def save_organized_meeting(
 
 
 def delete_note(session: Any, note_id: int) -> dict[str, str | bool]:
-    """直接真删笔记；向量删除失败不回滚笔记删除。"""
+    """直接真删笔记并解除任务关联；向量删除失败不回滚笔记删除。"""
     note = get_note_by_id(session, note_id)
+    link_service.set_note_tasks(session, note, [])
     session.delete(note)
     session.commit()
 
@@ -562,6 +570,37 @@ def serialize_note(note: Note) -> dict[str, Any]:
     attendees = []
     if note.meeting_attendees:
         attendees = [name for name in (part.strip() for part in re.split(r"[,，]", note.meeting_attendees)) if name]
+    current_session = object_session(note)
+    task_ids = link_service.task_ids_for_note(note)
+
+    def load_tasks() -> list[Any]:
+        """读取关联任务摘要，失效 ID 自动跳过。"""
+        from models.models import Task
+
+        if current_session is not None:
+            return [
+                task for task_id in task_ids
+                if (task := current_session.get(Task, task_id)) is not None
+            ]
+
+        from services.db import SessionLocal
+
+        with SessionLocal() as db:
+            return [
+                task for task_id in task_ids
+                if (task := db.get(Task, task_id)) is not None
+            ]
+
+    tasks = load_tasks()
+    task_summaries = [
+        {
+            "id": task.id,
+            "title": task.title,
+            "category": task.category,
+            "completed": task.completed,
+        }
+        for task in tasks
+    ]
     return {
         "id": note.id,
         "title": note.title,
@@ -570,6 +609,9 @@ def serialize_note(note: Note) -> dict[str, Any]:
         "source": note.source,
         "tags": _note_tags(note),
         "related_ids": _related_ids(note),
+        "task_ids": [task.id for task in tasks],
+        "task_summaries": task_summaries,
+        "task_count": len(tasks),
         "quality_score": note.quality_score,
         "quality_reason": _quality_reasons.get(
             note.id, "可重新评估获取详细理由"

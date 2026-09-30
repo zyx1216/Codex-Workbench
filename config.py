@@ -19,7 +19,7 @@ AI_CONFIG_PATH = DATA_DIR / "ai_config.json"
 SCHEDULER_CONFIG_PATH = DATA_DIR / "scheduler_config.json"
 
 APP_NAME = "个人工作台"
-APP_VERSION = "2.11.0"
+APP_VERSION = "2.12.0"
 
 
 def ensure_dirs() -> None:

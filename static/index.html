@@ -22,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.11.0</div>
+    <div class="sidebar-version">v2.12.0</div>
   </aside>
 
   <main class="main">
@@ -504,6 +504,14 @@
         <span class="field-label">分类</span>
         <select id="edit-category" class="input"></select>
       </label>
+      <div class="field link-field" id="note-task-field">
+        <span class="field-label">关联任务（最多 3 个，仅搜索未完成任务）</span>
+        <div class="link-picker" id="note-task-picker">
+          <div class="link-chips" id="note-task-chips"></div>
+          <input type="text" id="note-task-search" class="input" placeholder="搜索未完成任务" autocomplete="off" />
+          <div class="link-results" id="note-task-results" hidden></div>
+        </div>
+      </div>
       <div class="modal-error" id="edit-modal-error" hidden></div>
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-save-edit">💾 保存</button>
@@ -644,17 +652,48 @@
         <span class="field-label">截止日期</span>
         <input type="date" id="task-form-due-date" class="input" />
       </label>
-      <label class="field">
-        <span class="field-label">关联笔记</span>
-        <select id="task-form-note" class="input">
-          <option value="">不关联</option>
-        </select>
-      </label>
+      <div class="field link-field">
+        <span class="field-label">关联笔记（最多 3 篇）</span>
+        <div class="link-picker" id="task-note-picker">
+          <div class="link-chips" id="task-note-chips"></div>
+          <input type="text" id="task-note-search" class="input" placeholder="搜索笔记标题或分类" autocomplete="off" />
+          <div class="link-results" id="task-note-results" hidden></div>
+        </div>
+      </div>
 
       <div class="modal-error" id="task-modal-error" hidden></div>
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-save-user-task" type="button">保存</button>
         <button class="btn btn-ghost" id="btn-cancel-user-task" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 任务完成并生成笔记弹窗 -->
+  <div class="modal-mask" id="task-complete-note-modal" hidden>
+    <div class="modal glass task-complete-note-card">
+      <button class="modal-close" id="task-complete-note-close" title="关闭">×</button>
+      <h3 class="modal-title">📝 完成并生成笔记</h3>
+      <p class="modal-desc" id="task-complete-note-task"></p>
+      <label class="field">
+        <span class="field-label">笔记标题</span>
+        <input type="text" id="task-complete-note-title" class="input" />
+      </label>
+      <label class="field">
+        <span class="field-label">笔记内容</span>
+        <textarea id="task-complete-note-content" class="input textarea" rows="6"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">分类</span>
+        <select id="task-complete-note-category" class="input">
+          <option value="日常">日常</option>
+          <option value="工作">工作</option>
+        </select>
+      </label>
+      <div class="modal-error" id="task-complete-note-error" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-complete-note" type="button">保存并完成</button>
+        <button class="btn btn-ghost" id="btn-cancel-complete-note" type="button">取消</button>
       </div>
     </div>
   </div>
