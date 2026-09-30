@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -25,6 +27,7 @@ from langchain_openai import ChatOpenAI
 from models.models import RssSource
 from services import (
     ai_service,
+    crawler_service,
     note_service,
     rag_service,
     rss_service,
@@ -37,17 +40,21 @@ MAX_TOOL_ROUNDS = 4
 MAX_MESSAGE_LENGTH = 2000
 MAX_HISTORY_ITEMS = 20
 
-SYSTEM_PROMPT = """你是个人工作台的智能助手，可以帮用户管理笔记、RSS 订阅、待处理内容和知识问答。
+SYSTEM_PROMPT = """你是个人工作台助手，可以帮用户管理笔记、RSS 订阅、待处理内容，并对笔记库进行知识问答。
+你还可以抓取公开网页正文、创建浏览器提醒。
 规则：
 1. 需要实时数据、系统状态，或会改变系统状态时，必须调用工具，不能编造。
 2. 查询类问题直接给简洁结果；操作完成后明确说明成功或失败。
 3. 待处理内容必须先预览；只有用户明确说“保存”后才能保存。
 4. 不执行删除操作。用户要求删除时，提醒用户到对应页面手动确认删除。
-5. 回答使用中文，简洁自然，不要长篇大论。"""
+5. 不抓取登录态、内网或非公开网页；抓取失败时告诉用户具体原因。
+6. 创建提醒必须使用工具，不要只在回复里说“已提醒”。
+7. 回答使用中文，简洁自然，不要长篇大论。
+当前时间：{current_time}（Asia/Shanghai）。"""
 
 FALLBACK_PLAN_PROMPT = """你运行在不支持 Function Calling 的模型上。
 请判断用户是否需要调用工具。只能输出 JSON，不要 Markdown，不要解释。
-可用工具：search_notes、create_note、add_rss_source、fetch_rss、get_stats、get_pending、process_pending、save_pending_item、answer_question。
+可用工具：search_notes、create_note、add_rss_source、fetch_rss、get_stats、get_pending、process_pending、save_pending_item、answer_question、create_reminder、fetch_webpage。
 格式：
 - 不需要工具：{"calls":[]}
 - 需要一个工具：{"calls":[{"name":"工具名","arguments":{...}}]}
@@ -72,7 +79,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "search_notes",
-                "description": "搜索笔记库。用户要找笔记、资料、文章或主题内容时使用。",
+                "description": "搜索笔记库。用户要找笔记、资料、文章或主题内容时使用；不要用它查询任务、日程或系统统计。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -87,7 +94,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "create_note",
-                "description": "用户明确提供标题和内容，要求新建一篇笔记时使用。",
+                "description": "用户明确提供标题和内容，要求新建一篇笔记时使用；不要用它保存待处理队列内容。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -108,7 +115,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "add_rss_source",
-                "description": "用户要求添加 RSS 订阅源时使用。",
+                "description": "用户要求添加 RSS 订阅源时使用；不要用它抓取已有 RSS。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -124,7 +131,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "fetch_rss",
-                "description": "用户要求抓取 RSS，或抓取所有 RSS 时使用。",
+                "description": "用户要求抓取 RSS，或抓取所有 RSS 时使用；不要用它抓取普通网页。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -139,7 +146,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "get_stats",
-                "description": "用户询问笔记数量、今日新增、待处理数、RSS 源数量时使用。",
+                "description": "用户询问笔记数量、今日新增、待处理数、RSS 源数量时使用；没有查询需求时不要调用。",
                 "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
             },
         },
@@ -147,7 +154,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "get_pending",
-                "description": "用户询问待处理队列、待处理内容时使用。",
+                "description": "用户询问待处理队列、待处理内容时使用；不要用它读取已保存笔记正文。",
                 "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
             },
         },
@@ -155,7 +162,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "process_pending",
-                "description": "用户要求处理某条待处理内容并生成预览时使用。不会自动保存。",
+                "description": "用户要求处理某条待处理内容并生成预览时使用；不会自动保存，不要把它当成保存工具。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -170,7 +177,7 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "save_pending_item",
-                "description": "用户确认保存待处理内容预览时使用。",
+                "description": "用户确认保存待处理内容预览时使用；未获得确认时不要调用。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -192,13 +199,44 @@ def list_tools() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "answer_question",
-                "description": "用户提出知识性问题，并希望只基于笔记库回答时使用。",
+                "description": "用户提出知识性问题，并希望只基于笔记库回答时使用；不要用它查询实时系统数据。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "question": _string_property("用户的问题"),
+                        "question": _string_property("用户的问题，必填"),
                     },
                     "required": ["question"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_reminder",
+                "description": "用户要求在指定时间提醒事项时使用；提醒只在浏览器页面打开时生效，不要用它记录普通笔记。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": _string_property("提醒内容，必填"),
+                        "remind_time": _string_property("提醒时间，格式 YYYY-MM-DD HH:MM，必填"),
+                    },
+                    "required": ["content", "remind_time"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "fetch_webpage",
+                "description": "用户要求读取公开网页正文时使用；不抓取登录态、内网或需要授权的页面。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": _string_property("公开网页的 http/https 地址，必填"),
+                    },
+                    "required": ["url"],
                     "additionalProperties": False,
                 },
             },
@@ -375,6 +413,45 @@ def _run_answer_question(session: Session, arguments: dict[str, Any]) -> dict[st
     return rag_service.answer_question(question, session)
 
 
+def _run_create_reminder(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+    """校验提醒并返回浏览器需要保存的客户端动作。"""
+    content = str(arguments.get("content") or "").strip()
+    raw_time = str(arguments.get("remind_time") or "").strip()
+    if not content:
+        raise AgentError("提醒内容不能为空")
+    try:
+        remind_time = datetime.strptime(raw_time, "%Y-%m-%d %H:%M")
+    except ValueError as exc:
+        raise AgentError("提醒时间格式应为 YYYY-MM-DD HH:MM") from exc
+    if remind_time <= datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None):
+        raise AgentError("提醒时间必须晚于当前时间")
+    normalized = remind_time.strftime("%Y-%m-%d %H:%M")
+    return {
+        "content": content,
+        "remind_time": normalized,
+        "client_action": {
+            "type": "create_reminder",
+            "content": content,
+            "remind_time": normalized,
+        },
+    }
+
+
+def _run_fetch_webpage(session: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+    """抓取公开网页并返回精简正文。"""
+    url = str(arguments.get("url") or "").strip()
+    if not url:
+        raise AgentError("网页地址不能为空")
+    html, final_url = crawler_service.fetch_url(
+        url,
+        timeout=crawler_service.PUBLIC_FETCH_TIMEOUT,
+        public_only=True,
+    )
+    result = crawler_service.extract_content(html, final_url)
+    result["content"] = result.get("content", "")[:6000]
+    return result
+
+
 _TOOL_RUNNERS = {
     "search_notes": _run_search_notes,
     "create_note": _run_create_note,
@@ -385,6 +462,8 @@ _TOOL_RUNNERS = {
     "process_pending": _run_process_pending,
     "save_pending_item": _run_save_pending,
     "answer_question": _run_answer_question,
+    "create_reminder": _run_create_reminder,
+    "fetch_webpage": _run_fetch_webpage,
 }
 
 
@@ -416,12 +495,12 @@ def execute_tool(
 
 
 def _tool_result_json(session: Session, name: str, arguments: dict[str, Any]) -> str:
-    """LangChain 工具统一返回 JSON 字符串。"""
-    return json.dumps(
-        execute_tool(session, name, arguments),
-        ensure_ascii=False,
-        default=str,
-    )
+    """LangChain 工具统一返回 JSON 字符串，并透传客户端动作。"""
+    payload = execute_tool(session, name, arguments)
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("client_action"), dict):
+        payload["client_action"] = data["client_action"]
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def summarize_result(name: str, data: Any) -> str:
@@ -447,6 +526,10 @@ def summarize_result(name: str, data: Any) -> str:
         return "已保存预览并标记完成"
     if name == "answer_question":
         return "已基于笔记库回答"
+    if name == "create_reminder":
+        return f"已创建提醒：{data.get('remind_time', '')} {data.get('content', '')}"
+    if name == "fetch_webpage":
+        return f"已抓取网页：{data.get('title') or data.get('url', '')}"
     return "执行完成"
 
 
@@ -458,6 +541,10 @@ def summarize_error(name: str, error: str) -> str:
         return f"RSS 抓取失败：{error}"
     if name == "process_pending":
         return f"处理失败：{error}"
+    if name == "create_reminder":
+        return f"创建提醒失败：{error}"
+    if name == "fetch_webpage":
+        return f"网页抓取失败：{error}"
     return f"{name} 失败：{error}"
 
 
@@ -571,7 +658,7 @@ def _build_tools(session: Session) -> list[Any]:
 
     @tool
     def answer_question(question: str) -> str:
-        """用户提出知识性问题，并希望只基于笔记库回答时使用。
+        """用户提出知识性问题，并希望只基于笔记库回答时使用；不要用它查询实时系统数据。
 
         Args:
             question: 用户的问题，必填。
@@ -580,6 +667,33 @@ def _build_tools(session: Session) -> list[Any]:
             session,
             "answer_question",
             {"question": question},
+        )
+
+    @tool
+    def create_reminder(content: str, remind_time: str) -> str:
+        """用户要求在指定时间提醒事项时使用；提醒只在页面打开时生效。
+
+        Args:
+            content: 提醒内容，必填。
+            remind_time: 提醒时间，格式 YYYY-MM-DD HH:MM。
+        """
+        return _tool_result_json(
+            session,
+            "create_reminder",
+            {"content": content, "remind_time": remind_time},
+        )
+
+    @tool
+    def fetch_webpage(url: str) -> str:
+        """用户要求读取公开网页正文时使用；不抓取登录态或内网页面。
+
+        Args:
+            url: 公开网页的 http/https 地址，必填。
+        """
+        return _tool_result_json(
+            session,
+            "fetch_webpage",
+            {"url": url},
         )
 
     return [
@@ -592,26 +706,50 @@ def _build_tools(session: Session) -> list[Any]:
         process_pending,
         save_pending_item,
         answer_question,
+        create_reminder,
+        fetch_webpage,
     ]
 
 
 # ============ 历史和主流程 ============
 def _clean_history(history: list[dict[str, Any]] | None) -> list[dict[str, str]]:
-    """清理前端历史，只保留普通用户和助手消息。"""
+    """清理前端历史，并把工具调用摘要压缩回助手消息。"""
     cleaned: list[dict[str, str]] = []
     for item in history or []:
         role = item.get("role")
         content = item.get("content")
-        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-            cleaned.append({"role": role, "content": content[:MAX_MESSAGE_LENGTH]})
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        content = content[:MAX_MESSAGE_LENGTH]
+        actions = item.get("actions")
+        if isinstance(actions, list) and actions:
+            action_text = "；".join(
+                str(action.get("summary") or action.get("error") or "")[:300]
+                for action in actions
+                if isinstance(action, dict)
+            )
+            if action_text:
+                content = f"{content}\n历史工具结果：{action_text}"
+        if content.strip():
+            cleaned.append({"role": role, "content": content})
     return cleaned[-MAX_HISTORY_ITEMS:]
 
 
-def _build_agent(session: Session) -> AgentExecutor:
+def _system_prompt(history_summary: str = "") -> str:
+    """构造带当前时间和历史摘要的系统提示词。"""
+    current_time = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+    prompt = SYSTEM_PROMPT.replace("{current_time}", current_time)
+    summary = (history_summary or "").strip()[:1500]
+    if summary:
+        prompt += f"\n\n之前对话摘要：{summary}"
+    return prompt
+
+
+def _build_agent(session: Session, history_summary: str = "") -> AgentExecutor:
     """创建 LangChain 工具调用 Agent。"""
     tools = _build_tools(session)
     prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
+        ("system", _system_prompt(history_summary)),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -658,6 +796,8 @@ def _actions_from_steps(steps: list[tuple[Any, Any]]) -> list[dict[str, Any]]:
             "ok": bool(result.get("ok")),
             "summary": result.get("summary", ""),
         }
+        if isinstance(result.get("client_action"), dict):
+            action["client_action"] = result["client_action"]
         if not action["ok"]:
             action["error"] = result.get("error", "工具执行失败")
         actions.append(action)
@@ -668,6 +808,7 @@ def chat(
     user_message: str,
     history: list[dict[str, Any]] | None,
     session: Session,
+    history_summary: str = "",
 ) -> dict[str, Any]:
     """Agent 主入口：工具调用、工具执行、自然语言总结。"""
     message = (user_message or "").strip()
@@ -675,14 +816,14 @@ def chat(
         raise AgentError("消息不能为空")
 
     try:
-        result = _build_agent(session).invoke({
+        result = _build_agent(session, history_summary).invoke({
             "input": message[:MAX_MESSAGE_LENGTH],
             "history": _clean_history(history),
         })
     except Exception as exc:  # noqa: BLE001 - 需要区分兼容降级和普通模型错误
         text = str(exc)
         if _unsupported_tools(text):
-            return _fallback_without_tools(message, history, session)
+            return _fallback_without_tools(message, history, session, history_summary)
         raise AgentError(f"AI 调用失败：{text}") from exc
 
     intermediate_steps = result.get("intermediate_steps") or []
@@ -698,6 +839,36 @@ def chat(
         raise AgentError("AI 返回内容为空")
     return {"answer": answer, "actions": actions}
 
+
+
+def summarize_history(
+    history: list[dict[str, Any]] | None,
+    summary: str = "",
+) -> str:
+    """用当前模型合并早期对话摘要；不写数据库。"""
+    cleaned = _clean_history(history)
+    if not cleaned and not summary.strip():
+        raise AgentError("没有可总结的对话内容")
+    raw = json.dumps(
+        {"old_summary": summary.strip()[:1500], "messages": cleaned},
+        ensure_ascii=False,
+        default=str,
+    )[:8000]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是对话摘要器。把已有摘要和新增对话合并成一段简洁中文摘要，"
+                "保留用户偏好、已确认事实、未完成事项和重要工具结果；不要编造。只输出摘要正文。"
+            ),
+        },
+        {"role": "user", "content": raw},
+    ]
+    completion = _create_completion(messages)
+    result = (completion.choices[0].message.content or "").strip()
+    if not result:
+        raise AgentError("对话摘要为空")
+    return result[:1500]
 
 def _unsupported_tools(message: str) -> bool:
     """判断错误是否明确表示不支持 Function Calling。"""
@@ -734,13 +905,16 @@ def _fallback_without_tools(
     user_message: str,
     history: list[dict[str, Any]] | None,
     session: Session,
+    history_summary: str = "",
 ) -> dict[str, Any]:
     """提示词解析模式：一次最多执行一个工具。"""
     base_messages: list[dict[str, Any]] = [
         {"role": "system", "content": FALLBACK_PLAN_PROMPT},
-        *_clean_history(history),
-        {"role": "user", "content": user_message[:MAX_MESSAGE_LENGTH]},
     ]
+    if history_summary.strip():
+        base_messages.append({"role": "system", "content": f"之前对话摘要：{history_summary.strip()[:1500]}"})
+    base_messages.extend(_clean_history(history))
+    base_messages.append({"role": "user", "content": user_message[:MAX_MESSAGE_LENGTH]})
 
     plan_text = _fallback_plan_text(base_messages)
     calls = _parse_fallback_plan(plan_text)
@@ -751,7 +925,7 @@ def _fallback_without_tools(
         raise AgentError("当前模型不支持 Function Calling，且指令解析失败，请更换模型")
     if not calls:
         return {
-            "answer": _fallback_plain_answer(user_message, history),
+            "answer": _fallback_plain_answer(user_message, history, history_summary),
             "actions": [],
         }
     if len(calls) > 1:
@@ -770,6 +944,8 @@ def _fallback_without_tools(
         "ok": result["ok"],
         "summary": result.get("summary", ""),
     }
+    if isinstance(result.get("data"), dict) and isinstance(result["data"].get("client_action"), dict):
+        action["client_action"] = result["data"]["client_action"]
     if not result["ok"]:
         action["error"] = result["error"]
 
@@ -806,10 +982,14 @@ def _parse_fallback_plan(text: str) -> list[dict[str, Any]] | None:
 def _fallback_plain_answer(
     user_message: str,
     history: list[dict[str, Any]] | None,
+    history_summary: str = "",
 ) -> str:
     """无需工具时的普通回答。"""
+    system = "你是个人工作台的智能助手，用中文简洁自然地回复。"
+    if history_summary.strip():
+        system += f"\n之前对话摘要：{history_summary.strip()[:1500]}"
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": "你是个人工作台的智能助手，用中文简洁自然地回复。"},
+        {"role": "system", "content": system},
         *_clean_history(history),
         {"role": "user", "content": user_message},
     ]

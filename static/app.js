@@ -1918,9 +1918,6 @@ function bindFeedPage() {
     }
   });
 
-  $("#rss-url").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") addRssSource();
-  });
 }
 
 function makeButton(className, text) {
@@ -2280,7 +2277,12 @@ async function applyPreparedRestore() {
 
 /* ============ v2.0：AI 助手聊天和向量同步 ============ */
 let qaPollTimer = null;
-let agentHistory = [];
+const AGENT_HISTORY_KEY = "personalWorkbenchAgentHistory";
+const AGENT_REMINDER_KEY = "personalWorkbenchAgentReminders";
+const AGENT_MAX_MESSAGES = 20;
+const AGENT_MAX_SUMMARY = 1500;
+let agentMemory = {summary: "", messages: []};
+let agentReminderTimer = null;
 
 const TOOL_NAME_TEXT = {
   search_notes: "搜索笔记",
@@ -2292,6 +2294,8 @@ const TOOL_NAME_TEXT = {
   process_pending: "处理待办",
   save_pending_item: "保存预览",
   answer_question: "知识问答",
+  create_reminder: "创建提醒",
+  fetch_webpage: "抓取网页",
 };
 
 function stateText(status) {
@@ -2341,39 +2345,376 @@ async function syncVectorIndex() {
   setTimeout(loadVectorStats, 500);
 }
 
+function readAgentMemory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(AGENT_HISTORY_KEY) || '{}');
+    if (raw && Array.isArray(raw.messages)) {
+      agentMemory = {
+        summary: String(raw.summary || '').slice(0, AGENT_MAX_SUMMARY),
+        messages: raw.messages.filter((item) => item && (item.role === 'user' || item.role === 'assistant')).slice(-AGENT_MAX_MESSAGES),
+      };
+      return;
+    }
+  } catch (_) { /* 损坏历史按空处理 */ }
+  agentMemory = {summary: '', messages: []};
+}
+
+function saveAgentMemory() {
+  try {
+    localStorage.setItem(AGENT_HISTORY_KEY, JSON.stringify(agentMemory));
+  } catch (_) { /* localStorage 不可用时保持当前会话 */ }
+}
+
+function updateAgentSummaryState() {
+  const el = $('#agent-summary-state');
+  if (!el) return;
+  el.textContent = agentMemory.summary ? '历史：已摘要' : '历史：无摘要';
+}
+
+function formatAgentTime(timestamp) {
+  const date = new Date(timestamp || Date.now());
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function inlineMarkdown(text) {
+  return text
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+
+function markdownToHtml(markdown) {
+  const source = escapeHtml(markdown || '');
+  const lines = source.split(/\r?\n/);
+  const html = [];
+  let paragraph = [];
+  let listType = '';
+  let codeLines = [];
+  let inCode = false;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${paragraph.map(inlineMarkdown).join(' ')}</p>`);
+    paragraph = [];
+  };
+  const closeList = () => {
+    if (!listType) return;
+    html.push(listType === 'ul' ? '</ul>' : '</ol>');
+    listType = '';
+  };
+
+  lines.forEach((line) => {
+    if (line.startsWith('```')) {
+      flushParagraph();
+      closeList();
+      if (inCode) {
+        html.push(`<pre><code>${codeLines.join('\n')}</code></pre>`);
+        codeLines = [];
+        inCode = false;
+      } else {
+        inCode = true;
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      closeList();
+      return;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      closeList();
+      const level = heading[1].length + 2;
+      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+    const unordered = line.match(/^[-*]\s+(.+)$/);
+    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    if (unordered || ordered) {
+      flushParagraph();
+      const nextType = unordered ? 'ul' : 'ol';
+      if (listType !== nextType) {
+        closeList();
+        listType = nextType;
+        html.push(nextType === 'ul' ? '<ul>' : '<ol>');
+      }
+      html.push(`<li>${inlineMarkdown((unordered || ordered)[1])}</li>`);
+      return;
+    }
+    closeList();
+    paragraph.push(line);
+  });
+
+  if (inCode) html.push(`<pre><code>${codeLines.join('\n')}</code></pre>`);
+  flushParagraph();
+  closeList();
+  return html.join('');
+}
+
+function buildAgentActions(actions) {
+  const details = document.createElement('details');
+  details.className = 'agent-thinking';
+  const summary = document.createElement('summary');
+  summary.textContent = `思考过程（${actions.length}）`;
+  details.appendChild(summary);
+  const body = document.createElement('div');
+  body.className = 'agent-thinking-body';
+  actions.forEach((action) => {
+    const row = document.createElement('div');
+    row.className = `agent-action ${action.ok ? 'ok' : 'failed'}`;
+    const toolName = TOOL_NAME_TEXT[action.name] || action.name;
+    row.innerHTML = `<span class="agent-action-name">${escapeHtml(toolName)}</span><span class="agent-action-summary">${escapeHtml(action.summary || action.error || (action.ok ? '完成' : '失败'))}</span>`;
+    body.appendChild(row);
+  });
+  details.appendChild(body);
+  return details;
+}
+
+function buildAgentMessageNode(message) {
+  const card = document.createElement('div');
+  card.className = `agent-message agent-message-${message.role === 'user' ? 'user' : 'ai'}`;
+  if (message.role === 'assistant') {
+    const answer = document.createElement('div');
+    answer.className = 'agent-answer';
+    answer.innerHTML = markdownToHtml(message.content || '');
+    card.appendChild(answer);
+    if (Array.isArray(message.actions) && message.actions.length) {
+      card.appendChild(buildAgentActions(message.actions));
+    }
+  } else {
+    card.textContent = message.content || '';
+  }
+  const time = document.createElement('div');
+  time.className = 'agent-message-time';
+  time.textContent = formatAgentTime(message.timestamp);
+  card.appendChild(time);
+  return card;
+}
+
+function appendChatNode(node) {
+  const log = $('#agent-chat-log');
+  const empty = $('.agent-empty', log);
+  if (empty) empty.remove();
+  log.appendChild(node);
+  scrollAgentLog();
+}
+
+function scrollAgentLog() {
+  const log = $('#agent-chat-log');
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function renderAgentHistory() {
+  const log = $('#agent-chat-log');
+  if (!log) return;
+  log.innerHTML = '';
+  if (!agentMemory.messages.length) {
+    const empty = document.createElement('div');
+    empty.className = 'agent-empty';
+    empty.textContent = '用大白话告诉我要查什么、记什么，或要操作 RSS。';
+    log.appendChild(empty);
+    return;
+  }
+  agentMemory.messages.forEach((message) => log.appendChild(buildAgentMessageNode(message)));
+  scrollAgentLog();
+}
+
+function appendUserMessage(text) {
+  const message = {role: 'user', content: text, timestamp: new Date().toISOString(), actions: []};
+  appendChatNode(buildAgentMessageNode(message));
+  return message;
+}
+
+function appendTypingMessage() {
+  const wrap = document.createElement('div');
+  wrap.className = 'agent-message agent-message-ai';
+  wrap.innerHTML = '<span class="typing-dots"><i></i><i></i><i></i></span><span class="typing-text">正在输入...</span>';
+  appendChatNode(wrap);
+  return wrap;
+}
+
+function renderAgentAnswer(data, typingNode) {
+  if (typingNode) typingNode.remove();
+  const message = {
+    role: 'assistant',
+    content: data.answer || '',
+    timestamp: new Date().toISOString(),
+    actions: Array.isArray(data.actions) ? data.actions : [],
+  };
+  appendChatNode(buildAgentMessageNode(message));
+  return message;
+}
+
+function appendAgentError(message) {
+  const card = document.createElement('div');
+  card.className = 'agent-message agent-message-ai agent-message-error';
+  card.textContent = message;
+  appendChatNode(card);
+}
+
+function readAgentReminders() {
+  try {
+    const items = JSON.parse(localStorage.getItem(AGENT_REMINDER_KEY) || '[]');
+    return Array.isArray(items) ? items : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveAgentReminders(items) {
+  try {
+    localStorage.setItem(AGENT_REMINDER_KEY, JSON.stringify(items));
+  } catch (_) { /* localStorage 不可用时只在当前页面生效 */ }
+}
+
+async function requestAgentNotificationPermission() {
+  if (!('Notification' in window)) return 'unsupported';
+  if (Notification.permission !== 'default') return Notification.permission;
+  try {
+    return await Notification.requestPermission();
+  } catch (_) {
+    return 'denied';
+  }
+}
+
+async function registerAgentReminder(action) {
+  const content = String(action.content || '').trim();
+  const rawTime = String(action.remind_time || '').trim();
+  const when = new Date(rawTime.replace(' ', 'T'));
+  if (!content || Number.isNaN(when.getTime())) {
+    toast('提醒数据不完整，未保存', 'error');
+    return;
+  }
+  const reminders = readAgentReminders();
+  reminders.push({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    content,
+    remind_time: rawTime,
+    timestamp: when.getTime(),
+  });
+  saveAgentReminders(reminders);
+  await requestAgentNotificationPermission();
+  toast(`提醒已创建：${rawTime}`, 'success');
+}
+
+function applyClientActions(actions) {
+  (actions || []).forEach((action) => {
+    if (action && action.client_action && action.client_action.type === 'create_reminder') {
+      registerAgentReminder(action.client_action);
+    }
+  });
+}
+
+async function checkAgentReminders() {
+  const reminders = readAgentReminders();
+  if (!reminders.length) return;
+  const now = Date.now();
+  const due = reminders.filter((item) => Number(item.timestamp) <= now);
+  const pending = reminders.filter((item) => Number(item.timestamp) > now);
+  if (!due.length) return;
+  saveAgentReminders(pending);
+  for (const item of due) {
+    const text = `提醒：${item.content}`;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification('个人工作台提醒', { body: item.content });
+      } catch (_) {
+        toast(text, 'warning');
+      }
+    } else {
+      toast(text, 'warning');
+    }
+  }
+}
+
+function startAgentReminderLoop() {
+  if (agentReminderTimer) return;
+  void checkAgentReminders();
+  agentReminderTimer = setInterval(checkAgentReminders, 30000);
+}
+
+async function summarizeOldAgentHistory() {
+  if (agentMemory.messages.length <= AGENT_MAX_MESSAGES) return;
+  const overflow = agentMemory.messages.slice(0, agentMemory.messages.length - AGENT_MAX_MESSAGES);
+  try {
+    const body = await fetchJson('/api/agent/summarize', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({history: overflow, summary: agentMemory.summary}),
+    });
+    agentMemory.summary = String(body.data?.summary || '').slice(0, AGENT_MAX_SUMMARY);
+    agentMemory.messages = agentMemory.messages.slice(-AGENT_MAX_MESSAGES);
+    saveAgentMemory();
+    renderAgentHistory();
+    updateAgentSummaryState();
+  } catch (err) {
+    toast(`历史摘要暂未更新：${err.message || '请稍后重试'}`, 'warning');
+  }
+}
+
+function clearAgentHistory() {
+  if (!agentMemory.messages.length && !agentMemory.summary) return;
+  if (!confirm('确定清空全部对话历史和摘要吗？此操作不可恢复。')) return;
+  agentMemory = {summary: '', messages: []};
+  saveAgentMemory();
+  renderAgentHistory();
+  updateAgentSummaryState();
+  toast('已开始新对话', 'success');
+}
+
+function initAgentMemory() {
+  readAgentMemory();
+  renderAgentHistory();
+  updateAgentSummaryState();
+  startAgentReminderLoop();
+}
+
 async function sendAgentMessage(rawText) {
-  const text = (rawText || "").trim();
-  const input = $("#agent-message-input");
-  const sendBtn = $("#btn-agent-send");
+  const text = (rawText || '').trim();
+  const input = $('#agent-message-input');
+  const sendBtn = $('#btn-agent-send');
   if (!text) {
-    toast("请输入消息", "warning");
+    toast('请输入消息', 'warning');
     return;
   }
 
-  input.value = "";
-  appendUserMessage(text);
+  const requestHistory = agentMemory.messages.slice(-AGENT_MAX_MESSAGES);
+  input.value = '';
+  if (/提醒|remind/i.test(text)) {
+    void requestAgentNotificationPermission();
+  }
+  const userMessage = appendUserMessage(text);
+  agentMemory.messages.push(userMessage);
+  saveAgentMemory();
   const typing = appendTypingMessage();
   sendBtn.disabled = true;
   scrollAgentLog();
 
   try {
-    const res = await fetchJson("/api/agent/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const res = await fetchJson('/api/agent/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         message: text,
-        history: agentHistory,
+        history: requestHistory,
+        history_summary: agentMemory.summary,
       }),
     });
-    renderAgentAnswer(res.data || {}, typing);
-    agentHistory.push({ role: "user", content: text });
-    agentHistory.push({
-      role: "assistant",
-      content: res.data?.answer || "",
-    });
+    const assistantMessage = renderAgentAnswer(res.data || {}, typing);
+    agentMemory.messages.push(assistantMessage);
+    saveAgentMemory();
+    applyClientActions(assistantMessage.actions);
+    await summarizeOldAgentHistory();
   } catch (err) {
     typing.remove();
-    appendAgentError(err.message || "发送失败");
+    appendAgentError(err.message || '发送失败');
   } finally {
     sendBtn.disabled = false;
     input.focus();
@@ -2381,94 +2722,33 @@ async function sendAgentMessage(rawText) {
   }
 }
 
-function appendUserMessage(text) {
-  const el = document.createElement("div");
-  el.className = "agent-message agent-message-user";
-  el.textContent = text;
-  appendChatNode(el);
-}
-
-function appendTypingMessage() {
-  const wrap = document.createElement("div");
-  wrap.className = "agent-message agent-message-ai";
-  wrap.innerHTML = '<span class="typing-dots"><i></i><i></i><i></i></span><span class="typing-text">思考中...</span>';
-  appendChatNode(wrap);
-  return wrap;
-}
-
-function renderAgentAnswer(data, typingNode) {
-  typingNode.remove();
-  const card = document.createElement("div");
-  card.className = "agent-message agent-message-ai";
-
-  const answer = document.createElement("div");
-  answer.className = "agent-answer";
-  answer.textContent = data.answer || "";
-  card.appendChild(answer);
-
-  if (Array.isArray(data.actions) && data.actions.length) {
-    const actions = document.createElement("div");
-    actions.className = "agent-actions";
-    data.actions.forEach((action) => {
-      const item = document.createElement("div");
-      item.className = `agent-action ${action.ok ? "ok" : "failed"}`;
-      const toolName = TOOL_NAME_TEXT[action.name] || action.name;
-      item.innerHTML = `
-        <span class="agent-action-name">${escapeHtml(toolName)}</span>
-        <span class="agent-action-summary">${escapeHtml(action.summary || (action.ok ? "完成" : action.error || "失败"))}</span>`;
-      actions.appendChild(item);
-    });
-    card.appendChild(actions);
-  }
-
-  appendChatNode(card);
-}
-
-function appendAgentError(message) {
-  const card = document.createElement("div");
-  card.className = "agent-message agent-message-ai agent-message-error";
-  card.textContent = message;
-  appendChatNode(card);
-}
-
-function appendChatNode(node) {
-  const log = $("#agent-chat-log");
-  const empty = $(".agent-empty", log);
-  if (empty) empty.remove();
-  log.appendChild(node);
-  scrollAgentLog();
-}
-
-function scrollAgentLog() {
-  const log = $("#agent-chat-log");
-  log.scrollTop = log.scrollHeight;
-}
-
 function bindQaPage() {
-  const input = $("#agent-message-input");
-  $("#btn-agent-send").addEventListener("click", () => sendAgentMessage(input.value));
+  const input = $('#agent-message-input');
+  $('#btn-agent-send').addEventListener('click', () => sendAgentMessage(input.value));
+  $('#btn-agent-new-chat').addEventListener('click', clearAgentHistory);
 
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       sendAgentMessage(input.value);
     }
   });
 
-  $$(".agent-quick-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const text = btn.textContent.trim() === "添加RSS源"
-        ? "我要添加 RSS 源"
+  $$('.agent-quick-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const text = btn.textContent.trim() === '添加RSS源'
+        ? '我要添加 RSS 源'
         : btn.textContent.trim();
       sendAgentMessage(text);
     });
   });
 
-  $("#btn-vector-sync").addEventListener("click", () => {
-    syncVectorIndex().catch((err) => toast(err.message || "同步启动失败", "error"));
+  $('#btn-vector-sync').addEventListener('click', () => {
+    syncVectorIndex().catch((err) => toast(err.message || '同步启动失败', 'error'));
   });
-}
 
+  initAgentMemory();
+}
 
 /* ============ v2.3：质量评分、关联笔记、风格重生成 ============ */
 let styleTargetNote = null;

@@ -22,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.12.0</div>
+    <div class="sidebar-version">v2.13.0</div>
   </aside>
 
   <main class="main">
@@ -178,8 +178,12 @@
           <div class="vector-info">
             <span class="vector-count" id="qa-vector-count">向量笔记：0</span>
             <span class="vector-state" id="qa-vector-state">状态：空闲</span>
+            <span class="agent-summary-state" id="agent-summary-state">历史：无摘要</span>
           </div>
-          <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
+          <div class="agent-head-actions">
+            <button class="btn btn-ghost btn-sm" id="btn-agent-new-chat" type="button">新对话</button>
+            <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
+          </div>
         </div>
 
         <div class="agent-quick-commands" aria-label="快捷指令">
@@ -199,7 +203,7 @@
           <button class="btn btn-primary" id="btn-agent-send" type="button">发送</button>
         </div>
 
-        <p class="hint">助手会先调用工具再总结；删除类操作不会由 AI 直接执行。</p>
+        <p class="hint">助手会先调用工具再总结；对话历史仅保存在本机浏览器，删除类操作不会由 AI 直接执行。</p>
       </div>
     </section>
 

@@ -241,10 +241,18 @@ class AskRequest(BaseModel):
 
 
 class AgentChatRequest(BaseModel):
-    """Agent 聊天请求体；历史只在本次请求和前端内存中存在。"""
+    """Agent 聊天请求体；历史由前端 localStorage 持久化。"""
 
     message: str
-    history: list[dict[str, str]] = []
+    history: list[dict[str, Any]] = []
+    history_summary: str = ""
+
+
+class AgentSummarizeRequest(BaseModel):
+    """Agent 历史摘要请求体。"""
+
+    history: list[dict[str, Any]] = []
+    summary: str = ""
 
 
 def ok(data: Any = None, message: str = "success") -> dict[str, Any]:
@@ -1236,11 +1244,21 @@ def agent_chat(payload: AgentChatRequest, db: Session = Depends(get_db)):
     """自然语言操作入口：Function Calling、工具执行和自然语言总结。"""
     try:
         result = agent_service.chat(
-            payload.message, payload.history, db
+            payload.message, payload.history, db, payload.history_summary
         )
     except (agent_service.AgentError, ai_service.AiError) as exc:
         return fail(str(exc))
     return ok(result)
+
+
+@app.post("/api/agent/summarize")
+def agent_summarize(payload: AgentSummarizeRequest):
+    """生成前端早期对话摘要，不写数据库。"""
+    try:
+        summary = agent_service.summarize_history(payload.history, payload.summary)
+    except (agent_service.AgentError, ai_service.AiError) as exc:
+        return fail(str(exc))
+    return ok({"summary": summary})
 
 
 # 静态资源放在 /static 下，需在所有路由之后挂载
