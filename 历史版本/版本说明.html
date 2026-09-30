@@ -803,6 +803,21 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">个人工作台 v2.13.0</td>
+        <td class="time">2026-09-30 15:36</td>
+        <td>
+          <span class="tag">Agent工具</span><span class="tag">多轮记忆</span><b>Agent 能力增强</b>：
+          <ul>
+            <li>Agent 新增 create_reminder 和 fetch_webpage 两个工具，工具总数扩展到 11 个；删除操作仍由页面手动确认。</li>
+            <li>创建提醒返回客户端动作，浏览器保存到 localStorage，并在页面运行期间通过桌面通知或 toast 提醒。</li>
+            <li>网页抓取限制 10 秒总超时、5 秒连接超时，只允许公开 http/https 页面，拦截本机和内网地址，正文最多 6000 字。</li>
+            <li>Agent 对话历史和摘要保存在浏览器 localStorage，刷新后可恢复，保留最近 10 轮，超出后调用模型生成摘要。</li>
+            <li>工具调用结果写入对话上下文并以折叠的“思考过程”展示；助手回复支持无依赖安全 Markdown 子集。</li>
+            <li>系统提示词动态注入当前上海时间，并按现有真实工具能力描述，不新增删除、任务或日程 Agent 工具。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
