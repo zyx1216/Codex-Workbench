@@ -818,6 +818,21 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">个人工作台 v2.14.0</td>
+        <td class="time">2026-09-30 16:12</td>
+        <td>
+          <span class="tag">RAG</span><span class="tag">向量检索</span><b>RAG 优化</b>：
+          <ul>
+            <li>支持火山方舟 Embedding 与 Rerank 配置，远端失败自动回退本地 all-MiniLM-L6-v2。</li>
+            <li>使用 notes_remote 和 notes_local 双 Chroma collection，分别固定 2048/384 维，禁止混用。</li>
+            <li>笔记按段落分块，单块最多 500 字、重叠 50 字；标题单独向量化，向量与关键词混合检索。</li>
+            <li>Rerank 默认关闭，开启后对候选笔记重排；超时或异常自动保持原检索顺序。</li>
+            <li>RAG 回答返回参考资料，显示标题、分类和相似度，点击可跳转笔记详情。</li>
+            <li>设置页新增向量模型配置和重建进度展示，重建期间问答会提示暂不可用。</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 
