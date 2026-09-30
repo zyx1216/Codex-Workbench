@@ -798,10 +798,23 @@ def _actions_from_steps(steps: list[tuple[Any, Any]]) -> list[dict[str, Any]]:
         }
         if isinstance(result.get("client_action"), dict):
             action["client_action"] = result["client_action"]
+        if name == "answer_question" and isinstance(result.get("data"), dict):
+            sources = result["data"].get("sources")
+            if isinstance(sources, list) and sources:
+                action["sources"] = sources
         if not action["ok"]:
             action["error"] = result.get("error", "工具执行失败")
         actions.append(action)
     return actions
+
+
+def _sources_from_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从工具操作记录中提取 RAG 引用来源。"""
+    for action in reversed(actions):
+        sources = action.get("sources")
+        if isinstance(sources, list):
+            return sources
+    return []
 
 
 def chat(
@@ -837,7 +850,7 @@ def chat(
     answer = (result.get("output") or "").strip()
     if not answer:
         raise AgentError("AI 返回内容为空")
-    return {"answer": answer, "actions": actions}
+    return {"answer": answer, "actions": actions, "sources": _sources_from_actions(actions)}
 
 
 
@@ -946,6 +959,10 @@ def _fallback_without_tools(
     }
     if isinstance(result.get("data"), dict) and isinstance(result["data"].get("client_action"), dict):
         action["client_action"] = result["data"]["client_action"]
+    if name == "answer_question" and isinstance(result.get("data"), dict):
+        sources = result["data"].get("sources")
+        if isinstance(sources, list) and sources:
+            action["sources"] = sources
     if not result["ok"]:
         action["error"] = result["error"]
 
@@ -955,7 +972,7 @@ def _fallback_without_tools(
     ]
     completion = _create_completion(answer_messages)
     answer = completion.choices[0].message.content or "操作已完成"
-    return {"answer": answer.strip(), "actions": [action]}
+    return {"answer": answer.strip(), "actions": [action], "sources": action.get("sources", [])}
 
 
 def _fallback_plan_text(messages: list[dict[str, Any]]) -> str:

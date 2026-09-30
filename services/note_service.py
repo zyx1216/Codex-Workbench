@@ -548,7 +548,7 @@ def regenerate_note(
 
     warnings: list[str] = []
     try:
-        vector_service.update_note(note.id, note.title, note.content, tags)
+        vector_service.update_note(note.id, note.title, note.content, tags, note.category)
         _refresh_related(note, session, commit=True)
     except vector_service.VectorError as exc:
         warnings.append(str(exc))

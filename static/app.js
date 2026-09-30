@@ -2038,6 +2038,12 @@ async function loadConfig() {
     const c = res.data || {};
     $("#ai-base-url").value = c.base_url || "";
     $("#ai-model").value = c.model || "";
+    $("#embedding-base-url").value = c.embedding_base_url || "https://ark.cn-beijing.volces.com/api/v3";
+    $("#embedding-model").value = c.embedding_model || "doubao-embedding-text-240715";
+    $("#embedding-use-local").checked = Boolean(c.use_local_embedding);
+    $("#rerank-enabled").checked = Boolean(c.rerank_enabled);
+    $("#rerank-model").value = c.rerank_model || "doubao-rerank-32k";
+    updateVectorConfigText();
   } catch (_) { /* 设置页加载失败不打扰 */ }
 }
 
@@ -2046,18 +2052,36 @@ async function saveConfig() {
     base_url: $("#ai-base-url").value.trim(),
     model: $("#ai-model").value.trim(),
     api_key: $("#ai-api-key").value,
+    embedding_base_url: $("#embedding-base-url").value.trim(),
+    embedding_model: $("#embedding-model").value.trim(),
+    use_local_embedding: $("#embedding-use-local").checked,
+    rerank_enabled: $("#rerank-enabled").checked,
+    rerank_model: $("#rerank-model").value.trim(),
   };
   try {
-    await fetchJson("/api/ai-config", {
+    const res = await fetchJson("/api/ai-config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
     $("#ai-api-key").value = "";
-    toast("配置已保存", "success");
+    updateVectorConfigText();
+    const needRebuild = Boolean(res.data?.rebuild_required);
+    $("#embedding-config-hint").textContent = needRebuild
+      ? "向量模型已变化，请点击 AI 助手页的“重建向量库”。"
+      : "切换向量模型后需要重建向量库。";
+    toast(res.message || (needRebuild ? "配置已保存，需要重建向量库" : "配置已保存"), needRebuild ? "warning" : "success");
   } catch (_) { /* 保存失败已有反馈路径 */ }
 }
 
+function updateVectorConfigText() {
+  const local = $("#embedding-use-local");
+  const localText = local.closest(".field").querySelector(".switch-text");
+  if (localText) localText.textContent = local.checked ? "使用本地模型" : "使用火山方舟";
+  const rerank = $("#rerank-enabled");
+  const rerankText = rerank.closest(".field").querySelector(".switch-text");
+  if (rerankText) rerankText.textContent = rerank.checked ? "开启" : "关闭";
+}
 async function testConnection() {
   try {
     const res = await fetchJson("/api/ai-test", { method: "POST" });
@@ -2158,6 +2182,8 @@ function bindSettings() {
   $("#btn-save").addEventListener("click", saveConfig);
   $("#btn-test").addEventListener("click", testConnection);
   $("#scheduler-enabled").addEventListener("change", updateSwitchText);
+  $("#embedding-use-local").addEventListener("change", updateVectorConfigText);
+  $("#rerank-enabled").addEventListener("change", updateVectorConfigText);
   $("#btn-save-scheduler").addEventListener("click", saveSchedulerSettings);
   $("#btn-run-now").addEventListener("click", (event) => runFetchNow(event.currentTarget));
   $("#btn-backup-export").addEventListener("click", downloadBackup);
@@ -2302,6 +2328,7 @@ function stateText(status) {
   return {
     idle: "空闲",
     running: "同步中",
+    rebuilding: "重建中",
     done: "同步完成",
     failed: "同步失败",
   }[status] || status;
@@ -2312,23 +2339,30 @@ async function loadVectorStats() {
     const res = await fetchJson("/api/vector/stats");
     const d = res.data || {};
     $("#qa-vector-count").textContent = `向量笔记：${d.note_count ?? 0}`;
-    if (d.status === "running") {
+    const mode = d.mode === "local" ? "本地 384 维" : "火山方舟 2048 维";
+    $("#qa-vector-mode").textContent = `向量：${mode}${d.fallback_active ? "（已降级本地）" : ""}`;
+    if (d.status === "running" || d.status === "rebuilding") {
       const doneCount = Number(d.progress || 0);
       const totalCount = Number(d.total || 0);
       $("#qa-vector-state").textContent =
-        totalCount ? `状态：同步中 ${doneCount}/${totalCount}` : "状态：同步中";
+        totalCount ? `状态：重建中 ${doneCount}/${totalCount}` : "状态：重建中";
       startVectorPolling(false);
     } else {
       $("#qa-vector-state").textContent = `状态：${stateText(d.status || "idle")}`;
       stopVectorPolling();
     }
+    const lock = d.status === "running" || d.status === "rebuilding";
+    const input = $("#agent-message-input");
+    const send = $("#btn-agent-send");
+    if (input) input.disabled = lock;
+    if (send) send.disabled = lock;
   } catch (err) {
     $("#qa-vector-state").textContent = `状态不可用：${err.message}`;
   }
 }
 
 function startVectorPolling(showStartToast = true) {
-  if (showStartToast) toast("向量同步已开始，首次下载模型可能较慢", "info");
+  if (showStartToast) toast("向量库重建已开始，正在预热远端和本地索引", "info");
   if (qaPollTimer) return;
   qaPollTimer = setInterval(loadVectorStats, 1000);
 }
@@ -2340,11 +2374,10 @@ function stopVectorPolling() {
 }
 
 async function syncVectorIndex() {
-  await fetchJson("/api/vector/sync", { method: "POST" });
+  await fetchJson("/api/vector/rebuild", { method: "POST" });
   startVectorPolling(true);
   setTimeout(loadVectorStats, 500);
 }
-
 function readAgentMemory() {
   try {
     const raw = JSON.parse(localStorage.getItem(AGENT_HISTORY_KEY) || '{}');
@@ -2477,6 +2510,24 @@ function buildAgentActions(actions) {
   return details;
 }
 
+function buildAgentSources(sources) {
+  const wrap = document.createElement('div');
+  wrap.className = 'agent-sources';
+  const title = document.createElement('div');
+  title.className = 'agent-sources-title';
+  title.textContent = '参考资料';
+  wrap.appendChild(title);
+  sources.forEach((source, index) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'agent-source-item';
+    const score = Number(source.score || 0);
+    row.innerHTML = `<span class="agent-source-index">[${index + 1}]</span><span class="agent-source-name">${escapeHtml(source.title || '无标题')}</span><span class="agent-source-meta">${escapeHtml(source.category || '默认')} · ${Math.round(score * 100)}%</span>`;
+    row.addEventListener('click', () => goToNote(source.id));
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
 function buildAgentMessageNode(message) {
   const card = document.createElement('div');
   card.className = `agent-message agent-message-${message.role === 'user' ? 'user' : 'ai'}`;
@@ -2487,6 +2538,9 @@ function buildAgentMessageNode(message) {
     card.appendChild(answer);
     if (Array.isArray(message.actions) && message.actions.length) {
       card.appendChild(buildAgentActions(message.actions));
+    if (Array.isArray(message.sources) && message.sources.length) {
+      card.appendChild(buildAgentSources(message.sources));
+    }
     }
   } else {
     card.textContent = message.content || '';
@@ -2547,11 +2601,11 @@ function renderAgentAnswer(data, typingNode) {
     content: data.answer || '',
     timestamp: new Date().toISOString(),
     actions: Array.isArray(data.actions) ? data.actions : [],
+    sources: Array.isArray(data.sources) ? data.sources : [],
   };
   appendChatNode(buildAgentMessageNode(message));
   return message;
 }
-
 function appendAgentError(message) {
   const card = document.createElement('div');
   card.className = 'agent-message agent-message-ai agent-message-error';

@@ -500,7 +500,7 @@ def run_regenerate(task_id: int, params: dict[str, Any]) -> dict[str, Any]:
             note.updated_at = datetime.now()
             session.commit()
             try:
-                vector_service.update_note(note.id, note.title, note.content, tags)
+                vector_service.update_note(note.id, note.title, note.content, tags, note.category)
             except vector_service.VectorError as exc:
                 logger.warning("缓存命中后向量更新失败：%s", exc)
             note_service._quality_reasons[note.id] = note_data.get("quality_reason") or ""

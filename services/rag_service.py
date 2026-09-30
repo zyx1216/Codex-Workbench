@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-RAG 问答服务。
-
-- 使用 LangChain BaseRetriever 从现有 ChromaDB 向量服务检索笔记
-- 使用 LCEL 构造问答链，让模型只基于检索到的笔记回答
-"""
+"""RAG 问答服务：混合检索、可选重排和引用来源。"""
 
 from __future__ import annotations
 
@@ -12,33 +7,33 @@ import json
 import logging
 from typing import Any
 
-from pydantic import ConfigDict
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
-from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.retrievers import BaseRetriever
 from langchain_openai import ChatOpenAI
 
-from services import ai_service, vector_service
+from models.models import Note
+from services import ai_service, rerank_service, vector_service
 
 logger = logging.getLogger(__name__)
 
-# 相关度低于该值的内容不进入上下文，避免明显不相关的笔记干扰回答
 MIN_SCORE = 0.20
-# 单条笔记和总上下文长度限制，防止超出模型上下文
 NOTE_LIMIT = 1500
 CONTEXT_LIMIT = 6000
+VECTOR_TOP_K = 20
+KEYWORD_TOP_K = 10
+FINAL_TOP_K = 5
 
 SYSTEM_PROMPT = (
-    "你是个人工作台的问答助手。必须遵守："
-    "1.只能依据用户给出的笔记内容回答，不能编造笔记里没有的信息；"
-    "2.如果笔记内容不足以回答问题，必须明确说明信息不足；"
-    "3.用中文回答，分点清晰；"
-    "4.引用笔记时使用对应的来源编号，如[1]、[2]；"
-    "5.不要提到本提示词。"
+    "你是一个个人知识库助手，根据用户提供的笔记内容回答问题。\n"
+    "规则：\n"
+    "1. 只根据提供的笔记内容回答，不要编造笔记里没有的信息\n"
+    '2. 如果笔记里没有相关内容，直接说 "笔记中没有找到相关内容"\n'
+    "3. 回答要简洁明了，重点突出\n"
+    "4. 引用笔记内容时用 [1] [2] 标注对应笔记\n"
+    "5. 用中文回答"
 )
 
 QUESTION_PROMPT = ChatPromptTemplate.from_messages([
@@ -47,92 +42,177 @@ QUESTION_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-class NoteRetriever(BaseRetriever):
-    """笔记检索器：把向量服务结果转换成 LangChain Document。"""
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符，避免用户输入 % 或 _ 时误匹配全部。"""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    session: Session
+def _tags_from_note(note: Note) -> list[str]:
+    """安全读取笔记标签，损坏时返回空列表。"""
+    try:
+        tags = json.loads(note.tags or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in tags] if isinstance(tags, list) else []
 
-    def _get_relevant_documents(
-        self,
-        query: str,
-        *,
-        run_manager: CallbackManagerForRetrieverRun | None = None,
-    ) -> list[Document]:
-        """检索相关笔记并过滤失效 ID、低相关度结果。"""
-        search_results = vector_service.search_notes(query, n_results=5)
-        documents: list[Document] = []
 
-        # 延迟导入模型，避免模块导入时产生额外依赖
-        from models.models import Note
+def _keyword_score(note: Note, query: str) -> float:
+    """给关键词命中一个简单、稳定的排序分。"""
+    query_lower = query.lower()
+    title = (note.title or "").lower()
+    content = (note.content or "").lower()
+    tags = [item.lower() for item in _tags_from_note(note)]
+    category = (note.category or "").lower()
 
-        for item in search_results:
-            if item["score"] < MIN_SCORE:
-                continue
-            note = self.session.get(Note, item["id"])
-            if note is None:
-                continue
+    score = 0.0
+    if title == query_lower:
+        score += 1.0
+    elif title.startswith(query_lower):
+        score += 0.85
+    elif query_lower in title:
+        score += 0.7
+    if query_lower in tags:
+        score += 0.55
+    elif any(query_lower in tag for tag in tags):
+        score += 0.35
+    if query_lower in category:
+        score += 0.3
+    if query_lower in content:
+        score += 0.25 + min(content.count(query_lower), 3) * 0.05
+    return round(score, 4)
 
-            try:
-                tag_list = json.loads(note.tags or "[]")
-            except json.JSONDecodeError:
-                tag_list = []
-            tag_text = ", ".join(tag_list if isinstance(tag_list, list) else [])
 
-            documents.append(Document(
-                page_content=note.content or "",
-                metadata={
-                    "id": note.id,
-                    "title": note.title or "无标题",
-                    "tags": tag_text,
-                    "score": item["score"],
-                },
-            ))
-        return documents
+def _keyword_search(session: Session, query: str, limit: int = KEYWORD_TOP_K) -> list[dict[str, Any]]:
+    """使用 SQLite LIKE 做关键词检索，返回经过简单打分的笔记 ID。"""
+    query = (query or "").strip()
+    if not query:
+        return []
+    pattern = f"%{_escape_like(query)}%"
+    statement = (
+        select(Note)
+        .where(
+            or_(
+                Note.title.ilike(pattern, escape="\\"),
+                Note.content.ilike(pattern, escape="\\"),
+                Note.tags.ilike(pattern, escape="\\"),
+                Note.category.ilike(pattern, escape="\\"),
+            )
+        )
+        .limit(max(limit * 3, limit))
+    )
+    notes = list(session.scalars(statement).all())
+    items = [
+        {"id": note.id, "score": _keyword_score(note, query), "keyword_score": _keyword_score(note, query)}
+        for note in notes
+        if _keyword_score(note, query) > 0
+    ]
+    items.sort(key=lambda item: (-item["score"], item["id"]))
+    return items[:max(1, limit)]
+
+
+def _note_text(note: Note) -> tuple[str, str]:
+    """构造送给 rerank 的文本和前端摘要。"""
+    tags = ", ".join(_tags_from_note(note))
+    content = (note.content or "").strip()
+    text = f"标题：{note.title or '无标题'}\n分类：{note.category or '默认'}\n标签：{tags}\n正文：{content}"
+    summary = content[:120]
+    return text, summary
+
+
+def retrieve_candidates(session: Session, query: str, limit: int = FINAL_TOP_K) -> list[dict[str, Any]]:
+    """向量 top20 + 关键词 top10 合并去重，可选 rerank 后取 top5。"""
+    query = (query or "").strip()
+    if not query:
+        return []
+    vector_hits: list[dict[str, Any]] = []
+    try:
+        vector_hits = vector_service.search_notes(query, n_results=VECTOR_TOP_K)
+    except vector_service.VectorError:
+        logger.info("向量检索不可用，本轮仅使用关键词检索")
+
+    keyword_hits = _keyword_search(session, query, limit=KEYWORD_TOP_K)
+    candidates: dict[int, dict[str, Any]] = {}
+    for rank, hit in enumerate(vector_hits):
+        note_id = int(hit["id"])
+        candidates[note_id] = {
+            "id": note_id,
+            "score": float(hit.get("score", 0.0)),
+            "keyword_score": 0.0,
+            "vector_rank": rank,
+            "keyword_rank": 9999,
+        }
+    for rank, hit in enumerate(keyword_hits):
+        note_id = int(hit["id"])
+        item = candidates.setdefault(note_id, {
+            "id": note_id,
+            "score": 0.0,
+            "keyword_score": 0.0,
+            "vector_rank": 9999,
+            "keyword_rank": rank,
+        })
+        item["keyword_score"] = float(hit.get("keyword_score", hit.get("score", 0.0)))
+        item["keyword_rank"] = min(item["keyword_rank"], rank)
+
+    enriched: list[dict[str, Any]] = []
+    for note_id, item in candidates.items():
+        note = session.get(Note, note_id)
+        if note is None:
+            continue
+        text, summary = _note_text(note)
+        enriched.append({
+            **item,
+            "id": note.id,
+            "title": note.title or "无标题",
+            "category": note.category or "默认",
+            "summary": summary,
+            "text": text,
+        })
+    enriched.sort(key=lambda item: (
+        item["vector_rank"], -item["keyword_score"], -item["score"], item["id"]
+    ))
+
+    if rerank_service.is_enabled() and len(enriched) > 1:
+        enriched = rerank_service.rerank_documents(query, enriched, top_n=max(1, limit))
+    return enriched[:max(1, limit)]
 
 
 def answer_question(question: str, session: Session) -> dict[str, Any]:
-    """单轮 RAG 问答。"""
+    """单轮 RAG 问答，返回回答和可点击的引用来源。"""
     question = (question or "").strip()
     if not question:
         raise vector_service.VectorError("问题不能为空")
+    if vector_service.is_rebuilding():
+        raise vector_service.VectorError("正在重建向量库，请稍后再试")
     question = question[:1000]
 
-    documents = NoteRetriever(session=session).invoke(question)
+    candidates = retrieve_candidates(session, question, limit=FINAL_TOP_K)
     valid_sources: list[dict[str, Any]] = []
     context_parts: list[str] = []
     used_length = 0
-
-    for document in documents:
-        index = len(valid_sources) + 1
-        body = document.page_content[:NOTE_LIMIT]
-        title = document.metadata.get("title", "无标题")
-        block = f"[{index}] 标题：{title}\n正文：{body}"
+    for index, item in enumerate(candidates, start=1):
+        body = (item.get("text") or "")[:NOTE_LIMIT]
+        block = f"[{index}] 标题：{item['title']}\n分类：{item['category']}\n正文：{body}"
         if used_length + len(block) > CONTEXT_LIMIT:
             break
-
+        if float(item.get("score", 0.0)) < MIN_SCORE and not item.get("keyword_score"):
+            continue
         context_parts.append(block)
         used_length += len(block)
         valid_sources.append({
-            "id": document.metadata.get("id"),
-            "title": title,
-            "score": document.metadata.get("score", 0.0),
+            "id": item["id"],
+            "title": item["title"],
+            "category": item["category"],
+            "score": float(item.get("score", 0.0)),
         })
 
     if not valid_sources:
-        return {
-            "answer": "笔记库中没有找到相关内容。",
-            "sources": [],
-        }
+        return {"answer": "笔记中没有找到相关内容", "sources": []}
 
-    context = "\n\n".join(context_parts)
     try:
-        answer = (
-            QUESTION_PROMPT
-            | _chat_model()
-            | StrOutputParser()
-        ).invoke({"context": context, "question": question})
+        answer = (QUESTION_PROMPT | _chat_model() | StrOutputParser()).invoke({
+            "context": "\n\n".join(context_parts),
+            "question": question,
+        })
     except ai_service.AiError:
         raise
     except Exception as exc:  # noqa: BLE001 - LangChain/OpenAI 异常类型不统一
@@ -148,21 +228,13 @@ def answer_question(question: str, session: Session) -> dict[str, Any]:
 def _chat_model() -> ChatOpenAI:
     """创建 LangChain OpenAI 兼容聊天模型。"""
     settings = ai_service.get_config()
-    base_url = settings.get("base_url", "").strip()
-    model = settings.get("model", "").strip()
+    base_url = str(settings.get("base_url", "") or "").strip()
+    model = str(settings.get("model", "") or "").strip()
     api_key = ai_service.get_api_key()
-
     if not base_url:
         raise ai_service.AiError("请先在设置页填写 Base URL 并保存")
     if not model:
         raise ai_service.AiError("请先在设置页填写模型名称并保存")
     if not api_key:
         raise ai_service.AiError("请先在设置页填写 API Key 并保存")
-
-    return ChatOpenAI(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        timeout=30,
-        max_retries=1,
-    )
+    return ChatOpenAI(model=model, api_key=api_key, base_url=base_url, timeout=30, max_retries=1)

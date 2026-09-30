@@ -22,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.13.0</div>
+    <div class="sidebar-version">v2.14.0</div>
   </aside>
 
   <main class="main">
@@ -178,11 +178,12 @@
           <div class="vector-info">
             <span class="vector-count" id="qa-vector-count">向量笔记：0</span>
             <span class="vector-state" id="qa-vector-state">状态：空闲</span>
+            <span class="vector-mode" id="qa-vector-mode">向量：本地</span>
             <span class="agent-summary-state" id="agent-summary-state">历史：无摘要</span>
           </div>
           <div class="agent-head-actions">
             <button class="btn btn-ghost btn-sm" id="btn-agent-new-chat" type="button">新对话</button>
-            <button class="btn btn-ghost btn-sm" id="btn-vector-sync">同步索引</button>
+            <button class="btn btn-ghost btn-sm" id="btn-vector-sync">重建向量库</button>
           </div>
         </div>
 
@@ -282,7 +283,36 @@
           <span class="field-label">API Key（已保存则不显示原文，留空表示不修改）</span>
           <input type="password" id="ai-api-key" class="input" placeholder="sk-..." />
         </label>
-        <div class="btn-row">
+                <div class="field">
+          <span class="field-label">Embedding Base URL</span>
+          <input type="text" id="embedding-base-url" class="input"
+                 placeholder="https://ark.cn-beijing.volces.com/api/v3" />
+        </div>
+        <div class="field">
+          <span class="field-label">Embedding 模型名称</span>
+          <input type="text" id="embedding-model" class="input" placeholder="doubao-embedding-text-240715" />
+        </div>
+        <div class="field">
+          <div class="field-label">向量模型</div>
+          <label class="switch-field" for="embedding-use-local">
+            <input type="checkbox" id="embedding-use-local" class="switch-input" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">使用火山方舟</span>
+          </label>
+          <p class="hint" id="embedding-config-hint">切换向量模型后需要重建向量库。</p>
+        </div>
+        <div class="field">
+          <div class="field-label">Rerank</div>
+          <label class="switch-field" for="rerank-enabled">
+            <input type="checkbox" id="rerank-enabled" class="switch-input" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">关闭</span>
+          </label>
+        </div>
+        <div class="field">
+          <span class="field-label">Rerank 模型名称</span>
+          <input type="text" id="rerank-model" class="input" placeholder="doubao-rerank-32k" />
+        </div><div class="btn-row">
           <button class="btn btn-primary" id="btn-save">保存配置</button>
           <button class="btn btn-ghost" id="btn-test">测试连接</button>
         </div>

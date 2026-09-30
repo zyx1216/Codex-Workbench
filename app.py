@@ -72,7 +72,11 @@ class AIConfig(BaseModel):
     base_url: str = ""
     model: str = ""
     api_key: str = ""
-
+    embedding_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    embedding_model: str = "doubao-embedding-text-240715"
+    use_local_embedding: bool = False
+    rerank_enabled: bool = False
+    rerank_model: str = "doubao-rerank-32k"
 
 class ProcessUrlRequest(BaseModel):
     """链接或手动粘贴正文处理请求体。"""
@@ -353,14 +357,39 @@ def get_ai_config():
 
 @app.post("/api/ai-config")
 def post_ai_config(payload: AIConfig):
-    """保存 AI 配置：base_url/model 写 json，api_key 非空时写 keyring。"""
+    """保存 AI 配置；API Key 仍只进入 keyring。"""
+    if not payload.use_local_embedding:
+        if not payload.embedding_base_url.strip():
+            return fail("请填写 Embedding Base URL")
+        if not payload.embedding_model.strip():
+            return fail("请填写 Embedding 模型名称")
+    if payload.rerank_enabled and not payload.rerank_model.strip():
+        return fail("请填写 Rerank 模型名称")
+
+    old = ai_service.get_config()
+    old_key = (
+        str(old.get("embedding_base_url", "") or "").strip(),
+        str(old.get("embedding_model", "") or "").strip(),
+        bool(old.get("use_local_embedding", False)),
+    )
+    new_key = (
+        payload.embedding_base_url.strip(),
+        payload.embedding_model.strip(),
+        bool(payload.use_local_embedding),
+    )
+    rebuild_required = old_key != new_key
     key_saved = ai_service.save_config(
         base_url=payload.base_url,
         model=payload.model,
         api_key=payload.api_key,
+        embedding_base_url=payload.embedding_base_url,
+        embedding_model=payload.embedding_model,
+        use_local_embedding=payload.use_local_embedding,
+        rerank_enabled=payload.rerank_enabled,
+        rerank_model=payload.rerank_model,
     )
-    return ok({"saved": True, "key_saved": key_saved}, message="配置已保存")
-
+    message = "配置已保存，需要重建向量库" if rebuild_required else "配置已保存"
+    return ok({"saved": True, "key_saved": key_saved, "rebuild_required": rebuild_required}, message=message)
 
 @app.post("/api/ai-test")
 def post_ai_test():
@@ -1222,15 +1251,24 @@ def vector_stats():
     return ok(stats)
 
 
-@app.post("/api/vector/sync")
-def vector_sync():
-    """后台启动全量向量同步。"""
+@app.post("/api/vector/rebuild")
+def vector_rebuild():
+    """后台重建远端和本地两套向量库。"""
     try:
-        vector_service.start_background_sync()
+        result = vector_service.start_background_sync()
     except vector_service.VectorError as exc:
         return fail(str(exc))
-    return ok({"status": "running"}, message="向量同步已开始，首次下载模型可能较慢")
+    return ok(result, message="向量库重建已开始")
 
+
+@app.post("/api/vector/sync")
+def vector_sync():
+    """兼容旧入口：与重建向量库行为一致。"""
+    try:
+        result = vector_service.start_background_sync()
+    except vector_service.VectorError as exc:
+        return fail(str(exc))
+    return ok(result, message="向量库重建已开始")
 
 # ============ v2.0：Agent Function Calling ============
 @app.get("/api/agent/tools")

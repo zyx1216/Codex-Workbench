@@ -26,7 +26,15 @@ KEYRING_SERVICE = "knowledge-digest"
 KEYRING_USERNAME = "ai_api_key"
 
 # 配置默认值：ai_config.json 不存在或字段缺失时回退
-DEFAULT_CONFIG: dict[str, str] = {"base_url": "", "model": ""}
+DEFAULT_CONFIG: dict[str, Any] = {
+    "base_url": "",
+    "model": "",
+    "embedding_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "embedding_model": "doubao-embedding-text-240715",
+    "use_local_embedding": False,
+    "rerank_enabled": False,
+    "rerank_model": "doubao-rerank-32k",
+}
 
 # 模型调用超时 30 秒，SDK 内部重试 1 次（共最多请求 2 次）
 CHAT_TIMEOUT = 30.0
@@ -115,8 +123,8 @@ def _load_keyring() -> Any:
         raise RuntimeError("当前环境缺少 keyring 库，无法读取密钥。") from exc
 
 
-def get_config() -> dict[str, str]:
-    """读取非敏感 AI 配置；文件不存在或损坏时返回默认空配置。"""
+def get_config() -> dict[str, Any]:
+    """读取非敏感 AI 配置；旧配置缺字段时自动补默认值。"""
     if not config.AI_CONFIG_PATH.exists():
         return DEFAULT_CONFIG.copy()
     try:
@@ -124,22 +132,49 @@ def get_config() -> dict[str, str]:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("ai_config.json 读取失败：%s", exc)
         return DEFAULT_CONFIG.copy()
+    if not isinstance(raw, dict):
+        return DEFAULT_CONFIG.copy()
+
     result = DEFAULT_CONFIG.copy()
-    for key in DEFAULT_CONFIG:
-        value = raw.get(key)
-        if isinstance(value, str):
+    for key, default in DEFAULT_CONFIG.items():
+        value = raw.get(key, default)
+        if isinstance(default, bool):
+            if isinstance(value, bool):
+                result[key] = value
+            elif isinstance(value, str):
+                result[key] = value.strip().lower() in ("1", "true", "yes", "on")
+        elif isinstance(default, str) and isinstance(value, str):
             result[key] = value
     return result
 
 
-def save_config(base_url: str, model: str, api_key: str) -> bool:
-    """写入非敏感 AI 配置；api_key 非空时同步写入 keyring。
-    keyring 写入失败不抛出（沙箱环境可能无权限访问 Windows 凭据管理器）。"""
+def save_config(
+    base_url: str,
+    model: str,
+    api_key: str,
+    embedding_base_url: str | None = None,
+    embedding_model: str | None = None,
+    use_local_embedding: bool | None = None,
+    rerank_enabled: bool | None = None,
+    rerank_model: str | None = None,
+) -> bool:
+    """写入非敏感 AI 配置；api_key 非空时同步写入 keyring。"""
     config.ensure_dirs()
-    payload = {
+    payload = get_config()
+    payload.update({
         "base_url": (base_url or "").strip(),
         "model": (model or "").strip(),
-    }
+    })
+    if embedding_base_url is not None:
+        payload["embedding_base_url"] = embedding_base_url.strip()
+    if embedding_model is not None:
+        payload["embedding_model"] = embedding_model.strip()
+    if use_local_embedding is not None:
+        payload["use_local_embedding"] = bool(use_local_embedding)
+    if rerank_enabled is not None:
+        payload["rerank_enabled"] = bool(rerank_enabled)
+    if rerank_model is not None:
+        payload["rerank_model"] = rerank_model.strip()
     config.AI_CONFIG_PATH.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -152,7 +187,6 @@ def save_config(base_url: str, model: str, api_key: str) -> bool:
         except Exception as exc:  # noqa: BLE001 - 跨平台 keyring 异常类型不统一
             logger.warning("keyring 写入失败（沙箱环境常见）：%s", exc)
     return key_saved
-
 
 def get_api_key() -> str:
     """从 keyring 读取 API Key；读取失败或未配置返回空字符串。"""
