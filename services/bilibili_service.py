@@ -56,6 +56,7 @@ WBI_MIXIN_KEY_ENC_TAB = [
 ]
 
 _refresh_lock = threading.Lock()
+_validate_lock = threading.Lock()
 _request_lock = threading.Lock()
 _last_request_at = 0.0
 _rate_limited_until = 0.0
@@ -405,18 +406,37 @@ def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
 
 
 def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
-    """补充视频详情和有效性，网络/限流错误不直接判定失效。"""
+    """补充详情并判断视频是否可见；网络/未知错误不误标失效。"""
     try:
         payload = _get_json(f"{BILIBILI_API}/x/web-interface/view", params={"bvid": bvid}, referer=f"{BILIBILI_VIDEO}/{bvid}/")
         data = payload.get("data") or {}
+        nested = data.get("video") or {}
         stat = data.get("stat") or {}
-        status = data.get("status", 1)
-        valid = status != 0
+        status = nested.get("status", data.get("status"))
+        title = str(data.get("title") or nested.get("title") or "").strip()
+        message = str(data.get("message") or data.get("errmsg") or nested.get("message") or "").strip()
+        errid = data.get("errid") or nested.get("errid")
+        title_missing = ("视频不见了" in title) or ("啊叻" in title and "视频" in title)
+        abnormal_status = status in (0,) or (status is not None and status not in (0, 1))
+        invalid = bool(title_missing or abnormal_status or message or errid or not title)
+        if invalid:
+            if title_missing:
+                reason = "B站返回视频不见提示"
+            elif status in (0,):
+                reason = "B站稿件不可见（status=0，已删除或设为私密）"
+            elif message:
+                reason = f"B站稿件异常：{message[:120]}"
+            elif errid:
+                reason = f"B站稿件异常：errid={errid}"
+            else:
+                reason = "B站稿件详情异常"
+        else:
+            reason = ""
         result = dict(fallback)
         result.update({
             "bvid": bvid,
-            "cid": _to_int(data.get("cid")) or None,
-            "title": str(data.get("title") or fallback.get("title") or "无标题")[:500],
+            "cid": _to_int(data.get("cid")) or fallback.get("cid"),
+            "title": title[:500] or fallback.get("title") or "无标题",
             "description": str(data.get("desc") or fallback.get("description") or "")[:3000],
             "publish_time": _parse_publish_time(data.get("pubdate")) or fallback.get("publish_time"),
             "duration": _parse_duration(data.get("duration")) or fallback.get("duration", 0),
@@ -428,13 +448,21 @@ def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
             "share": _to_int(stat.get("share") or fallback.get("share")),
             "cover": str(data.get("pic") or fallback.get("cover") or "")[:500],
             "pages": data.get("pages") or fallback.get("pages") or [],
-            "is_valid": valid,
-            "invalid_reason": "" if valid else "视频已失效或不可见（status=0）",
+            "is_valid": not invalid,
+            "invalid_reason": reason,
+            "last_validated_at": datetime.now(),
         })
+        if invalid:
+            logger.warning("B站视频确认失效 bvid=%s code=%s status=%s title=%s message=%s errid=%s", bvid, payload.get("code"), status, title, message, errid)
         return result
     except BilibiliRateLimited:
         raise
     except BilibiliError as exc:
+        if exc.code in (-404, 62002, 62004, -403):
+            result = dict(fallback)
+            result.update({"is_valid": False, "invalid_reason": f"B站稿件已删除或设为私密（code={exc.code}）", "last_validated_at": datetime.now()})
+            logger.warning("B站详情业务码确认失效 bvid=%s code=%s error=%s", bvid, exc.code, exc)
+            return result
         logger.info("视频详情失败，保留原有效性：%s", exc)
         result = dict(fallback)
         result.setdefault("is_valid", True)
@@ -765,6 +793,55 @@ def refresh_creators(session: Session, ids: list[int] | None = None) -> dict[str
         }
     finally:
         _refresh_lock.release()
+
+
+def validate_all_existing_videos(session: Session | None = None) -> dict[str, Any]:
+    """重新验证全部当前有效视频；412 时立即停止，不误标。"""
+    from services.db import SessionLocal
+    if not _validate_lock.acquire(blocking=False):
+        raise BilibiliError("已有验证任务正在执行")
+    own_session = session is None
+    db = session or SessionLocal()
+    try:
+        videos = list(db.scalars(select(BilibiliVideo).where(BilibiliVideo.is_valid == True)).all())  # noqa: E712
+        processed = 0
+        invalidated = 0
+        for video in videos:
+            try:
+                detail = fetch_video_detail(video.bvid, {"cid": video.cid, "pages": []})
+                video.is_valid = bool(detail.get("is_valid", True))
+                video.invalid_reason = detail.get("invalid_reason", "") if not video.is_valid else ""
+                video.last_validated_at = datetime.now()
+                if not video.is_valid:
+                    invalidated += 1
+                db.commit()
+                processed += 1
+                time.sleep(0.5)
+            except BilibiliRateLimited as exc:
+                db.rollback()
+                return {"processed": processed, "total": len(videos), "invalidated": invalidated, "rate_limited": True, "retry_after_seconds": getattr(exc, "retry_after_seconds", 0)}
+        return {"processed": processed, "total": len(videos), "invalidated": invalidated, "rate_limited": False, "retry_after_seconds": 0}
+    finally:
+        if own_session:
+            db.close()
+        _validate_lock.release()
+
+
+def start_startup_validation_once() -> None:
+    """v3.0.5 首次启动后台补验证，完成标记写在 data 目录。"""
+    marker = config.DATA_DIR / "bilibili_validation_v305.done"
+    if marker.exists():
+        return
+
+    def worker() -> None:
+        try:
+            result = validate_all_existing_videos()
+            if not result.get("rate_limited"):
+                marker.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+        except Exception:
+            logger.exception("存量失效视频补验证失败")
+
+    threading.Thread(target=worker, daemon=True, name="bili-validation-v305").start()
 
 
 def refresh_all(session: Session) -> dict[str, Any]:

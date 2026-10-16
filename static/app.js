@@ -4994,7 +4994,7 @@ function buildBilibiliVideoCard(video) {
   title.href = video.url;
   title.target = "_blank";
   title.rel = "noopener noreferrer";
-  title.textContent = `${video.is_valid ? "" : "⛔ 已失效 · "}${video.popularity_tag === "爆款" ? "🔥 " : ""}${video.title || "无标题"}`;
+  title.textContent = `${video.is_valid ? "" : "⛔ 已失效（删除/私密） · "}${video.popularity_tag === "爆款" ? "🔥 " : ""}${video.title || "无标题"}`;
   title.title = video.popularity_reason || "";
   const meta = document.createElement("div");
   meta.className = "video-meta";
@@ -5126,6 +5126,23 @@ async function refreshSelectedBilibiliCreators() {
     return;
   }
   await refreshBilibiliCreators(ids);
+}
+
+async function validateAllBilibiliVideos() {
+  const btn = $("#btn-validate-videos");
+  const oldText = btn.textContent;
+  btn.disabled = true; btn.textContent = "校验中…";
+  try {
+    const res = await fetchJson("/api/videos/validate-all", {method: "POST"});
+    const data = res.data || {};
+    if (data.rate_limited) {
+      toast(`B站接口限流，本次已校验 ${data.processed || 0} 条`, "warning");
+    } else {
+      toast(`校验完成，处理 ${data.processed || 0} 条，标记失效 ${data.invalidated || 0} 条`, "success");
+    }
+    await loadCreatorDashboard();
+  } catch (err) { toast(err.message || "校验失败", "error"); }
+  finally { btn.disabled = false; btn.textContent = oldText; }
 }
 
 async function saveBilibiliFeedback(videoId, feedback) {

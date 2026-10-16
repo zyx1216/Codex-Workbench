@@ -52,6 +52,7 @@ async def lifespan(_app: FastAPI):
     scheduler_service.start_scheduler()
     # SQLite 有笔记但向量库为空时后台补齐，不阻塞 FastAPI 启动
     vector_service.start_startup_sync_if_needed()
+    bilibili_service.start_startup_validation_once()
     async_task_service.start_worker()
     yield
     scheduler_service.stop_scheduler()
@@ -1399,6 +1400,16 @@ def post_video_feedback(video_id: int, payload: VideoFeedbackRequest, db: Sessio
     except bilibili_service.BilibiliError as exc:
         return fail(str(exc))
     return ok(bilibili_service.serialize_video(video), message="反馈已保存")
+
+
+@app.post("/api/videos/validate-all")
+def validate_all_bilibili_videos():
+    """手动补验证全部当前有效视频的失效状态。"""
+    try:
+        result = bilibili_service.validate_all_existing_videos()
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok(result, message="失效视频校验完成")
 
 
 @app.post("/api/videos/export-batch")
