@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -33,12 +37,35 @@ REQUEST_HEADERS = {
     "Referer": "https://www.bilibili.com",
 }
 REQUEST_TIMEOUT = 10.0
+REQUEST_INTERVAL = 2.0
+RATE_LIMIT_COOLDOWN = 3600.0
+WBI_CACHE_TTL = 3600.0
 FEEDBACK_LIMIT = 20
 AI_REASON_LIMIT = 30
+WBI_MIXIN_KEY_ENC_TAB = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+]
+
+_request_lock = threading.Lock()
+_last_request_at = 0.0
+_rate_limited_until = 0.0
+_wbi_cache: tuple[str, str, float] | None = None
+_wbi_lock = threading.Lock()
 
 
 class BilibiliError(Exception):
     """B站跟踪业务错误。"""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+class BilibiliRateLimited(BilibiliError):
+    """B站触发风控或限流。"""
 
 
 def parse_creator_uid(value: str) -> str:
@@ -63,14 +90,12 @@ def _to_int(value: Any) -> int:
 
 def _parse_publish_time(value: Any) -> datetime | None:
     try:
-        timestamp = int(value)
-        return datetime.fromtimestamp(timestamp)
+        return datetime.fromtimestamp(int(value))
     except (TypeError, ValueError, OSError):
         return None
 
 
 def _parse_duration(value: Any) -> int:
-    """把 B站 duration 字段统一转换为秒数。"""
     if isinstance(value, (int, float)):
         return max(0, int(value))
     text = str(value or "").strip()
@@ -90,62 +115,167 @@ def _parse_duration(value: Any) -> int:
     return 0
 
 
-def _get_json(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """请求 B站公开 JSON 接口，业务 code 非 0 时抛错。"""
-    try:
-        response = httpx.get(
-            url,
-            params=params,
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:  # noqa: BLE001 - 网络异常类型较多
-        logger.warning("B站接口请求失败 %s：%s", url, exc)
-        raise BilibiliError(f"B站接口请求失败：{exc}") from exc
-    if not isinstance(payload, dict):
-        raise BilibiliError("B站接口返回格式异常")
-    if payload.get("code") != 0:
-        raise BilibiliError(f"B站接口返回错误：{payload.get('message') or payload.get('code')}")
-    return payload
+def _throttle() -> None:
+    """所有 B站请求串行执行，任意两次请求间隔至少 2 秒。"""
+    global _last_request_at
+    with _request_lock:
+        now = time.monotonic()
+        wait = REQUEST_INTERVAL - (now - _last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_request_at = time.monotonic()
 
 
-def _get_html(url: str) -> str:
-    """获取 B站 HTML，用于 WBI 校验失败时的降级解析。"""
+def _ensure_not_rate_limited() -> None:
+    if _rate_limited_until and time.monotonic() < _rate_limited_until:
+        remaining = int(_rate_limited_until - time.monotonic())
+        raise BilibiliRateLimited(f"B站接口暂时限流，请 {remaining} 秒后再试", code=-412)
+
+
+def _set_rate_limited() -> None:
+    global _rate_limited_until
+    _rate_limited_until = time.monotonic() + RATE_LIMIT_COOLDOWN
+
+
+def _get_json(
+    url: str,
+    params: dict[str, Any] | None = None,
+    *,
+    allow_codes: tuple[int, ...] = (0,),
+    referer: str | None = None,
+) -> dict[str, Any]:
+    """带限速、日志和业务 code 检查的 B站 JSON 请求。"""
+    _ensure_not_rate_limited()
+    _throttle()
+    headers = dict(REQUEST_HEADERS)
+    if referer:
+        headers["Referer"] = referer
+    started = time.monotonic()
     try:
-        response = httpx.get(
-            url,
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-            follow_redirects=True,
-        )
+        response = httpx.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        elapsed = time.monotonic() - started
+        if response.status_code == 412:
+            _set_rate_limited()
+            logger.warning("B站接口限流 status=412 url=%s elapsed=%.2fs", response.url, elapsed)
+            raise BilibiliRateLimited("B站接口暂时限流，稍后再试", code=-412)
         response.raise_for_status()
-        response.encoding = response.encoding or "utf-8"
-        return response.text
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            logger.warning("B站接口 JSON 解析失败 url=%s status=%s body=%r", response.url, response.status_code, response.text[:300])
+            raise BilibiliError(f"B站接口返回无法解析：{exc}") from exc
+        code = payload.get("code") if isinstance(payload, dict) else None
+        message = payload.get("message") if isinstance(payload, dict) else ""
+        logger.info("B站接口返回 url=%s status=%s code=%s message=%s elapsed=%.2fs", response.url, response.status_code, code, message, elapsed)
+        if code == -412:
+            _set_rate_limited()
+            raise BilibiliRateLimited("B站接口暂时限流，稍后再试", code=code)
+        if code not in allow_codes:
+            raise BilibiliError(f"B站接口返回错误：{message or code}", code=code)
+        if not isinstance(payload, dict):
+            raise BilibiliError("B站接口返回格式异常")
+        return payload
+    except BilibiliError:
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("B站 HTML 请求失败 %s：%s", url, exc)
+        logger.warning("B站接口请求失败 url=%s error=%s", url, exc)
+        raise BilibiliError(f"B站接口请求失败：{exc}") from exc
+
+
+def _get_html(url: str, referer: str | None = None) -> str:
+    """获取 B站 HTML，用于 WBI 校验失败后的降级解析。"""
+    _ensure_not_rate_limited()
+    _throttle()
+    headers = dict(REQUEST_HEADERS)
+    if referer:
+        headers["Referer"] = referer
+    try:
+        response = httpx.get(url, headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        if response.status_code == 412:
+            _set_rate_limited()
+            logger.warning("B站 HTML 页面限流 status=412 url=%s", url)
+            raise BilibiliRateLimited("B站接口暂时限流，稍后再试", code=-412)
+        response.raise_for_status()
+        return response.text
+    except BilibiliError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("B站 HTML 请求失败 url=%s error=%s", url, exc)
         raise BilibiliError(f"B站页面请求失败：{exc}") from exc
 
 
-def fetch_creator_info(uid: str) -> dict[str, Any]:
-    """获取 UP 主名称和头像，WBI 接口失败时降级解析空间页。"""
+def _extract_wbi_key(url: str) -> str:
+    name = Path(urlparse(str(url or "")).path).name
+    return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _mixin_key(img_key: str, sub_key: str) -> str:
+    raw = f"{img_key}{sub_key}"
+    return "".join(raw[index] for index in WBI_MIXIN_KEY_ENC_TAB)[:32]
+
+
+def _get_wbi_keys(force: bool = False) -> tuple[str, str]:
+    """获取并缓存 WBI 密钥，缓存 1 小时；-352 时可强制刷新。"""
+    global _wbi_cache
+    with _wbi_lock:
+        now = time.monotonic()
+        if not force and _wbi_cache and _wbi_cache[2] > now:
+            return _wbi_cache[0], _wbi_cache[1]
+    payload = _get_json(f"{BILIBILI_API}/x/web-interface/nav", allow_codes=(0, -101))
+    data = payload.get("data") or {}
+    wbi_img = data.get("wbi_img") or {}
+    img_key = _extract_wbi_key(wbi_img.get("img_url", ""))
+    sub_key = _extract_wbi_key(wbi_img.get("sub_url", ""))
+    if not img_key or not sub_key:
+        raise BilibiliError("B站未返回 WBI 密钥")
+    with _wbi_lock:
+        _wbi_cache = (img_key, sub_key, time.monotonic() + WBI_CACHE_TTL)
+    logger.info("WBI 密钥已更新 img_key=%s sub_key=%s", img_key[:6], sub_key[:6])
+    return img_key, sub_key
+
+
+def _clear_wbi_cache() -> None:
+    global _wbi_cache
+    with _wbi_lock:
+        _wbi_cache = None
+
+
+def _sign_wbi_params(params: dict[str, Any]) -> dict[str, Any]:
+    img_key, sub_key = _get_wbi_keys()
+    signed = dict(params)
+    signed["wts"] = int(time.time())
+    cleaned = []
+    for key, value in signed.items():
+        text = re.sub(r"[!'()*]", "", str(value))
+        cleaned.append((key, text))
+    cleaned.sort(key=lambda item: item[0])
+    query = urlencode(cleaned, quote_via=quote, safe="")
+    signed["w_rid"] = hashlib.md5(f"{query}{_mixin_key(img_key, sub_key)}".encode("utf-8")).hexdigest()
+    return signed
+
+
+def _get_signed_json(url: str, params: dict[str, Any], referer: str) -> dict[str, Any]:
     try:
-        payload = _get_json(
-            f"{BILIBILI_API}/x/space/acc/info",
-            params={"mid": uid},
-        )
+        return _get_json(url, _sign_wbi_params(params), allow_codes=(0,), referer=referer)
+    except BilibiliError as exc:
+        if exc.code != -352:
+            raise
+        logger.warning("WBI 签名校验失败，刷新密钥后重试一次：%s", exc)
+        _clear_wbi_cache()
+        return _get_json(url, _sign_wbi_params(params), allow_codes=(0,), referer=referer)
+
+
+def fetch_creator_info(uid: str) -> dict[str, Any]:
+    """获取 UP 主名称和头像，接口失败时降级解析空间页。"""
+    try:
+        payload = _get_json(f"{BILIBILI_API}/x/space/acc/info", params={"mid": uid}, referer=f"{BILIBILI_SPACE}/{uid}")
         data = payload.get("data") or {}
-        return {
-            "uid": uid,
-            "name": str(data.get("name") or f"UP主{uid}")[:200],
-            "face": str(data.get("face") or "")[:500],
-        }
+        return {"uid": uid, "name": str(data.get("name") or f"UP主{uid}")[:200], "face": str(data.get("face") or "")[:500]}
+    except BilibiliRateLimited:
+        raise
     except BilibiliError as exc:
         logger.info("UP主信息接口降级 HTML：%s", exc)
-
-    html = _get_html(f"{BILIBILI_SPACE}/{uid}")
+    html = _get_html(f"{BILIBILI_SPACE}/{uid}", referer=f"{BILIBILI_SPACE}/{uid}")
     soup = BeautifulSoup(html, "html.parser")
     title = ""
     meta_title = soup.find("meta", attrs={"property": "og:title"})
@@ -180,8 +310,8 @@ def _video_from_search_item(item: dict[str, Any], uid: str) -> dict[str, Any]:
 
 
 def _videos_from_html(uid: str) -> list[dict[str, Any]]:
-    """WBI 校验失败时从空间页提取最近视频标题和 BV 号。"""
-    html = _get_html(f"{BILIBILI_SPACE}/{uid}/video")
+    """WBI 仍失败时，从空间页提取最近视频标题和 BV 号。"""
+    html = _get_html(f"{BILIBILI_SPACE}/{uid}/video", referer=f"{BILIBILI_SPACE}/{uid}")
     soup = BeautifulSoup(html, "html.parser")
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -196,55 +326,40 @@ def _videos_from_html(uid: str) -> list[dict[str, Any]]:
         if not title:
             continue
         seen.add(bvid)
-        items.append({
-            "bvid": bvid,
-            "uid": uid,
-            "title": title[:500],
-            "description": "",
-            "publish_time": None,
-            "duration": 0,
-            "play": 0,
-            "like": 0,
-            "coin": 0,
-            "favorite": 0,
-            "comment": 0,
-            "share": 0,
-            "cover": "",
-        })
+        items.append({"bvid": bvid, "uid": uid, "title": title[:500], "description": "", "publish_time": None, "duration": 0, "play": 0, "like": 0, "coin": 0, "favorite": 0, "comment": 0, "share": 0, "cover": ""})
         if len(items) >= 10:
             break
-    if not items:
-        raise BilibiliError("未从UP主空间页解析到视频，可能被 B站风控")
     return items
 
+
 def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
-    """获取 UP 主最近视频，WBI 校验失败时降级 HTML。"""
+    """获取 UP 主最近视频：WBI 签名优先，失败降级 HTML。"""
     try:
-        payload = _get_json(
+        payload = _get_signed_json(
             f"{BILIBILI_API}/x/space/wbi/arc/search",
-            params={"mid": uid, "ps": 10, "pn": 1},
+            {"mid": uid, "ps": 10, "pn": 1, "order": "pubdate"},
+            referer=f"{BILIBILI_SPACE}/{uid}",
         )
         data = payload.get("data") or {}
         video_list = ((data.get("list") or {}).get("vlist")) or []
-        items = [
-            _video_from_search_item(item, uid)
-            for item in video_list
-            if isinstance(item, dict) and item.get("bvid")
-        ]
-        if items:
-            return items
+        return [_video_from_search_item(item, uid) for item in video_list if isinstance(item, dict) and item.get("bvid")]
+    except BilibiliRateLimited:
+        raise
     except BilibiliError as exc:
-        logger.info("UP主视频接口降级 HTML：%s", exc)
-    return _videos_from_html(uid)
+        logger.warning("WBI 接口失败，降级 HTML：%s", exc)
+    try:
+        return _videos_from_html(uid)
+    except BilibiliRateLimited:
+        raise
+    except BilibiliError as exc:
+        logger.warning("HTML 降级也失败，本轮无新增视频：%s", exc)
+        return []
 
 
 def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
-    """补充单个视频的统计信息，详情接口失败时保留列表数据。"""
+    """补充单个视频的统计信息，详情失败时保留列表数据。"""
     try:
-        payload = _get_json(
-            f"{BILIBILI_API}/x/web-interface/view",
-            params={"bvid": bvid},
-        )
+        payload = _get_json(f"{BILIBILI_API}/x/web-interface/view", params={"bvid": bvid}, referer=f"{BILIBILI_VIDEO}/{bvid}/")
         data = payload.get("data") or {}
         stat = data.get("stat") or {}
         result = dict(fallback)
@@ -263,8 +378,10 @@ def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
             "cover": str(data.get("pic") or fallback.get("cover") or "")[:500],
         })
         return result
+    except BilibiliRateLimited:
+        raise
     except BilibiliError as exc:
-        logger.info("视频详情接口失败，使用列表数据：%s", exc)
+        logger.info("视频详情失败，使用列表数据：%s", exc)
         return fallback
 
 
@@ -454,225 +571,6 @@ UP主：{creator_name}
     return result
 
 
-def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
-    """获取 UP 主最近视频，WBI 校验失败时降级 HTML。"""
-    try:
-        payload = _get_json(
-            f"{BILIBILI_API}/x/space/wbi/arc/search",
-            params={"mid": uid, "ps": 10, "pn": 1},
-        )
-        data = payload.get("data") or {}
-        video_list = ((data.get("list") or {}).get("vlist")) or []
-        items = [
-            _video_from_search_item(item, uid)
-            for item in video_list
-            if isinstance(item, dict) and item.get("bvid")
-        ]
-        if items:
-            return items
-    except BilibiliError as exc:
-        logger.info("UP主视频接口降级 HTML：%s", exc)
-    return _videos_from_html(uid)
-
-
-def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
-    """补充单个视频的统计信息，详情接口失败时保留列表数据。"""
-    try:
-        payload = _get_json(
-            f"{BILIBILI_API}/x/web-interface/view",
-            params={"bvid": bvid},
-        )
-        data = payload.get("data") or {}
-        stat = data.get("stat") or {}
-        result = dict(fallback)
-        result.update({
-            "bvid": bvid,
-            "title": str(data.get("title") or fallback.get("title") or "无标题")[:500],
-            "description": str(data.get("desc") or fallback.get("description") or "")[:3000],
-            "publish_time": _parse_publish_time(data.get("pubdate")) or fallback.get("publish_time"),
-            "duration": _parse_duration(data.get("duration")) or fallback.get("duration", 0),
-            "play": _to_int(stat.get("view") or fallback.get("play")),
-            "like": _to_int(stat.get("like") or fallback.get("like")),
-            "coin": _to_int(stat.get("coin") or fallback.get("coin")),
-            "favorite": _to_int(stat.get("favorite") or fallback.get("favorite")),
-            "comment": _to_int(stat.get("reply") or fallback.get("comment")),
-            "share": _to_int(stat.get("share") or fallback.get("share")),
-            "cover": str(data.get("pic") or fallback.get("cover") or "")[:500],
-        })
-        return result
-    except BilibiliError as exc:
-        logger.info("视频详情接口失败，使用列表数据：%s", exc)
-        return fallback
-
-
-def serialize_creator(creator: BilibiliCreator) -> dict[str, Any]:
-    return {
-        "id": creator.id,
-        "uid": creator.uid,
-        "name": creator.name,
-        "face": creator.face,
-        "added_at": creator.added_at.isoformat() if creator.added_at else None,
-        "last_check_at": creator.last_check_at.isoformat() if creator.last_check_at else None,
-        "enabled": bool(creator.enabled),
-    }
-
-
-def serialize_video(video: BilibiliVideo) -> dict[str, Any]:
-    like_rate = (video.like / video.play) if video.play else 0.0
-    return {
-        "id": video.id,
-        "bvid": video.bvid,
-        "uid": video.uid,
-        "title": video.title,
-        "description": video.description,
-        "publish_time": video.publish_time.isoformat() if video.publish_time else None,
-        "duration": video.duration,
-        "play": video.play,
-        "like": video.like,
-        "coin": video.coin,
-        "favorite": video.favorite,
-        "comment": video.comment,
-        "share": video.share,
-        "cover": video.cover,
-        "url": f"{BILIBILI_VIDEO}/{video.bvid}/",
-        "ai_score": video.ai_score,
-        "ai_decision": video.ai_decision,
-        "ai_reason": video.ai_reason,
-        "category": video.category,
-        "user_feedback": video.user_feedback,
-        "popularity_tag": video.popularity_tag,
-        "popularity_reason": video.popularity_reason,
-        "like_rate": round(like_rate, 4),
-        "note_exported": bool(video.note_exported),
-        "exported_path": video.exported_path or "",
-        "created_at": video.created_at.isoformat() if video.created_at else None,
-    }
-
-
-def list_creators(session: Session) -> list[BilibiliCreator]:
-    return list(session.scalars(select(BilibiliCreator).order_by(BilibiliCreator.added_at.desc(), BilibiliCreator.id.desc())).all())
-
-
-def get_creator(session: Session, creator_id: int) -> BilibiliCreator:
-    creator = session.get(BilibiliCreator, creator_id)
-    if creator is None:
-        raise BilibiliError("UP主不存在")
-    return creator
-
-
-def add_creator(session: Session, value: str) -> dict[str, Any]:
-    """添加 UP 主并立即尝试抓取最近视频。"""
-    uid = parse_creator_uid(value)
-    creator = session.scalar(select(BilibiliCreator).where(BilibiliCreator.uid == uid))
-    created = creator is None
-    try:
-        info = fetch_creator_info(uid)
-    except BilibiliError as exc:
-        logger.warning("添加UP主时信息接口失败，使用占位名称：%s", exc)
-        info = {"uid": uid, "name": f"UP主{uid}", "face": ""}
-    if creator is None:
-        creator = BilibiliCreator(uid=uid, name=info["name"], face=info["face"], enabled=True)
-        session.add(creator)
-        session.commit()
-        session.refresh(creator)
-    else:
-        creator.name = info["name"] or creator.name
-        creator.face = info["face"] or creator.face
-        session.commit()
-    refresh_result = refresh_creator(session, creator)
-    return {"creator": serialize_creator(creator), "created": created, "refresh": refresh_result}
-
-
-def delete_creator(session: Session, creator_id: int) -> None:
-    creator = get_creator(session, creator_id)
-    session.delete(creator)
-    session.commit()
-
-
-def _recalculate_popularity(session: Session, uid: str) -> None:
-    """按同 UP 最近 10 条平均播放量重算爆款标签。"""
-    videos = list(session.scalars(
-        select(BilibiliVideo).where(BilibiliVideo.uid == uid)
-        .order_by(BilibiliVideo.publish_time.desc(), BilibiliVideo.id.desc()).limit(10)
-    ).all())
-    if not videos:
-        return
-    average = sum(video.play for video in videos) / len(videos)
-    for video in videos:
-        ratio = (video.play / average) if average else 0.0
-        like_rate = (video.like / video.play) if video.play else 0.0
-        if ratio > 2 and like_rate > 0.03:
-            tag = "爆款"
-            reason = f"播放量超过同UP主近10条平均的 {int((ratio - 1) * 100)}%，点赞率 {like_rate * 100:.1f}%"
-        elif ratio > 1.5:
-            tag = "有潜力"
-            reason = f"播放量超过同UP主近10条平均的 {int((ratio - 1) * 100)}%"
-        elif ratio < 0.5:
-            tag = "低迷"
-            reason = f"播放量低于同UP主近10条平均的 {int((1 - ratio) * 100)}%"
-        else:
-            tag = "正常"
-            reason = f"播放量约为同UP主近10条平均的 {int(ratio * 100)}%"
-        video.popularity_tag = tag
-        video.popularity_reason = reason[:200]
-    session.commit()
-
-
-def _feedback_examples(session: Session) -> list[str]:
-    rows = list(session.scalars(
-        select(BilibiliVideo).where(BilibiliVideo.user_feedback != "待确认")
-        .order_by(BilibiliVideo.id.desc()).limit(FEEDBACK_LIMIT)
-    ).all())
-    return [f"{item.title} => {item.user_feedback}" for item in rows]
-
-
-def _fallback_filter(video: dict[str, Any]) -> dict[str, Any]:
-    play = _to_int(video.get("play"))
-    like = _to_int(video.get("like"))
-    score = min(95, 45 + min(play // 10000, 25) + min(like // 1000, 20))
-    decision = "值得看" if score >= 70 else ("一般" if score >= 40 else "不值得看")
-    return {"score": score, "decision": decision, "reason": "AI 暂不可用，按播放和点赞数据暂估", "category": "未分类"}
-
-
-def apply_ai_filter(session: Session, video: BilibiliVideo, creator_name: str) -> dict[str, Any]:
-    """调用 AI 判断视频是否值得看，失败时保留可用的启发式结果。"""
-    examples = _feedback_examples(session)
-    example_text = "\n".join(examples) if examples else "暂无"
-    prompt = f"""你是一个内容筛选助手，根据视频标题和数据判断值不值得花时间看。
-目标用户是想学习AI、编程、自我提升的人。
-标题党、夸大其词的扣分；有实操教程、干货内容的加分。
-请只输出 JSON，不要 Markdown，不要解释。格式：
-{{"score": 0, "decision": "值得看", "reason": "不超过30字的理由", "category": "AI教程"}}
-score 为 0-100 分；decision 只能是 值得看、一般、不值得看。
-用户以往反馈示例：
-{example_text}
-
-UP主：{creator_name}
-标题：{video.title}
-简介：{video.description[:1000]}
-播放量：{video.play}
-点赞数：{video.like}
-"""
-    try:
-        raw = ai_service.chat(prompt)
-        cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
-        payload = json.loads(cleaned)
-        score = max(0, min(100, int(payload.get("score", 50))))
-        decision = str(payload.get("decision") or "").strip()
-        if decision not in ("值得看", "一般", "不值得看"):
-            decision = "值得看" if score >= 70 else ("一般" if score >= 40 else "不值得看")
-        result = {"score": score, "decision": decision, "reason": str(payload.get("reason") or "").strip()[:AI_REASON_LIMIT], "category": str(payload.get("category") or "未分类").strip()[:50] or "未分类"}
-    except (ai_service.AiError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.warning("视频 AI 筛选失败，使用启发式结果：%s", exc)
-        result = _fallback_filter({"play": video.play, "like": video.like})
-    video.ai_score = result["score"]
-    video.ai_decision = result["decision"]
-    video.ai_reason = result["reason"]
-    video.category = result["category"]
-    session.commit()
-    return result
-
-
 def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any]:
     """刷新单个 UP 主的视频；单个接口失败只记录，不让整个页面崩。"""
     added = 0
@@ -682,16 +580,25 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
         info = fetch_creator_info(creator.uid)
         creator.name = info["name"] or creator.name
         creator.face = info["face"] or creator.face
+    except BilibiliRateLimited as exc:
+        creator.last_check_at = datetime.now()
+        session.commit()
+        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True}
     except BilibiliError as exc:
         errors.append(str(exc))
 
     try:
         videos = fetch_creator_videos(creator.uid)
+    except BilibiliRateLimited as exc:
+        logger.warning("UP主 %s 视频刷新限流：%s", creator.uid, exc)
+        creator.last_check_at = datetime.now()
+        session.commit()
+        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True}
     except BilibiliError as exc:
         logger.warning("UP主 %s 视频刷新失败：%s", creator.uid, exc)
         creator.last_check_at = datetime.now()
         session.commit()
-        return {"added": 0, "updated": 0, "error": str(exc)}
+        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": False}
 
     existing = {
         item.bvid: item
@@ -702,9 +609,9 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
         bvid = item.get("bvid")
         if not bvid:
             continue
-        detail = fetch_video_detail(bvid, item)
         video = existing.get(bvid)
         if video is None:
+            detail = fetch_video_detail(bvid, item)
             video = BilibiliVideo(
                 bvid=bvid,
                 uid=creator.uid,
@@ -725,7 +632,8 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
             added += 1
         else:
             for key in ("title", "description", "publish_time", "duration", "play", "like", "coin", "favorite", "comment", "share", "cover"):
-                setattr(video, key, detail[key])
+                if item.get(key) is not None:
+                    setattr(video, key, item[key])
             updated += 1
     creator.last_check_at = datetime.now()
     session.commit()
@@ -735,7 +643,7 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
             apply_ai_filter(session, video, creator.name)
         except Exception as exc:  # noqa: BLE001 - 单条 AI 失败不影响入库
             logger.warning("视频 AI 筛选异常 %s：%s", video.bvid, exc)
-    return {"added": added, "updated": updated, "error": "；".join(errors)}
+    return {"added": added, "updated": updated, "error": "；".join(errors), "rate_limited": False}
 
 
 def refresh_all(session: Session) -> dict[str, Any]:
@@ -744,13 +652,19 @@ def refresh_all(session: Session) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     total_added = 0
     failed = 0
+    rate_limited = False
     for creator in creators:
-        result = refresh_creator(session, creator)
+        try:
+            result = refresh_creator(session, creator)
+        except Exception as exc:  # noqa: BLE001 - 单个 UP 主异常不阻断其他 UP 主
+            logger.exception("刷新UP主失败 uid=%s", creator.uid)
+            result = {"added": 0, "updated": 0, "error": str(exc), "rate_limited": False}
         total_added += int(result.get("added", 0))
+        rate_limited = rate_limited or bool(result.get("rate_limited"))
         if result.get("error"):
             failed += 1
         results.append({"creator": serialize_creator(creator), "result": result})
-    return {"results": results, "total_added": total_added, "failed": failed}
+    return {"results": results, "total_added": total_added, "failed": failed, "rate_limited": rate_limited}
 
 
 def list_videos(session: Session, category: str = "", decision: str = "", creator_uid: str = "") -> list[BilibiliVideo]:

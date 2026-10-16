@@ -5032,7 +5032,15 @@ async function refreshBilibiliCreators() {
   btn.textContent = "刷新中…";
   try {
     const res = await fetchJson("/api/creators/refresh", {method: "POST"});
-    toast(`刷新完成，新增 ${res.data?.total_added ?? 0} 条视频`, "success");
+    const data = res.data || {};
+    if (data.rate_limited) {
+      toast("B站接口暂时限流，稍后再试", "warning");
+    } else if (data.failed) {
+      const first = data.results?.find((item) => item.result?.error)?.result?.error || "部分 UP 主刷新失败";
+      toast(`刷新完成，新增 ${data.total_added || 0} 条；${first}`, "warning");
+    } else {
+      toast(`刷新完成，新增 ${data.total_added || 0} 条视频`, "success");
+    }
     await loadCreatorDashboard();
   } catch (err) {
     toast(err.message || "刷新失败", "error");

@@ -58,3 +58,5 @@
 - [x] v2.14.0 RAG 优化（火山方舟 Embedding + Rerank、双向量库、混合检索、引用来源）
 
 - [x] v3.0.0 B站 UP 主跟踪 + AI 筛选 + 爆款分析 + Obsidian 同步
+
+- [x] v3.0.1 B站 WBI 签名 + 请求限速 + 412 冷却
