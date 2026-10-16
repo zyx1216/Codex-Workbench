@@ -33,13 +33,18 @@ BILIBILI_VIDEO = "https://www.bilibili.com/video"
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.bilibili.com",
+    "Origin": "https://space.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
 }
 REQUEST_TIMEOUT = 10.0
 REQUEST_INTERVAL = 2.0
-RATE_LIMIT_COOLDOWN = 3600.0
+RATE_LIMIT_FIRST_WAIT = 10.0
+RATE_LIMIT_SECOND_WAIT = 900.0
+RATE_LIMIT_THIRD_WAIT = 3600.0
 WBI_CACHE_TTL = 3600.0
 FEEDBACK_LIMIT = 20
 AI_REASON_LIMIT = 30
@@ -54,6 +59,7 @@ _refresh_lock = threading.Lock()
 _request_lock = threading.Lock()
 _last_request_at = 0.0
 _rate_limited_until = 0.0
+_rate_limit_streak = 0
 _wbi_cache: tuple[str, str, float] | None = None
 _wbi_lock = threading.Lock()
 
@@ -68,6 +74,10 @@ class BilibiliError(Exception):
 
 class BilibiliRateLimited(BilibiliError):
     """B站触发风控或限流。"""
+
+    def __init__(self, message: str, code: int = -412, retry_after_seconds: int = 0):
+        super().__init__(message, code=code)
+        self.retry_after_seconds = retry_after_seconds
 
 
 def parse_creator_uid(value: str) -> str:
@@ -130,58 +140,77 @@ def _throttle() -> None:
 
 def _ensure_not_rate_limited() -> None:
     if _rate_limited_until and time.monotonic() < _rate_limited_until:
-        remaining = int(_rate_limited_until - time.monotonic())
-        raise BilibiliRateLimited(f"B站接口暂时限流，请 {remaining} 秒后再试", code=-412)
+        remaining = max(1, int(_rate_limited_until - time.monotonic()))
+        raise BilibiliRateLimited(f"B站接口限流中，预计 {remaining} 秒后恢复", retry_after_seconds=remaining)
 
 
-def _set_rate_limited() -> None:
-    global _rate_limited_until
-    _rate_limited_until = time.monotonic() + RATE_LIMIT_COOLDOWN
+def _set_rate_limited() -> int:
+    """记录 412 档位：第一次 10 秒，第二次 15 分钟，第三次起 1 小时。"""
+    global _rate_limited_until, _rate_limit_streak
+    _rate_limit_streak += 1
+    delay = RATE_LIMIT_FIRST_WAIT if _rate_limit_streak == 1 else (RATE_LIMIT_SECOND_WAIT if _rate_limit_streak == 2 else RATE_LIMIT_THIRD_WAIT)
+    _rate_limited_until = time.monotonic() + delay
+    logger.warning("B站限流档位=%s cooldown=%.0fs", _rate_limit_streak, delay)
+    return int(delay)
 
 
-def _get_json(
-    url: str,
-    params: dict[str, Any] | None = None,
-    *,
-    allow_codes: tuple[int, ...] = (0,),
-    referer: str | None = None,
-) -> dict[str, Any]:
-    """带限速、日志和业务 code 检查的 B站 JSON 请求。"""
-    _ensure_not_rate_limited()
-    _throttle()
-    headers = dict(REQUEST_HEADERS)
-    if referer:
-        headers["Referer"] = referer
-    started = time.monotonic()
-    try:
-        response = httpx.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
-        elapsed = time.monotonic() - started
-        if response.status_code == 412:
-            _set_rate_limited()
-            logger.warning("B站接口限流 status=412 url=%s elapsed=%.2fs", response.url, elapsed)
-            raise BilibiliRateLimited("B站接口暂时限流，稍后再试", code=-412)
-        response.raise_for_status()
+def _reset_rate_limit_streak() -> None:
+    global _rate_limit_streak, _rate_limited_until
+    _rate_limit_streak = 0
+    _rate_limited_until = 0.0
+
+
+def _get_json(url, params=None, *, allow_codes=(0,), referer=None):
+    """请求 B站 JSON；第一次 412 等 10 秒重试一次，后续进入递进冷却。"""
+    retried = False
+    while True:
+        _ensure_not_rate_limited()
+        _throttle()
+        headers = dict(REQUEST_HEADERS)
+        if referer:
+            headers["Referer"] = referer
+        started = time.monotonic()
         try:
-            payload = response.json()
-        except ValueError as exc:
-            logger.warning("B站接口 JSON 解析失败 url=%s status=%s body=%r", response.url, response.status_code, response.text[:300])
-            raise BilibiliError(f"B站接口返回无法解析：{exc}") from exc
-        code = payload.get("code") if isinstance(payload, dict) else None
-        message = payload.get("message") if isinstance(payload, dict) else ""
-        logger.info("B站接口返回 url=%s status=%s code=%s message=%s elapsed=%.2fs", response.url, response.status_code, code, message, elapsed)
-        if code == -412:
-            _set_rate_limited()
-            raise BilibiliRateLimited("B站接口暂时限流，稍后再试", code=code)
-        if code not in allow_codes:
-            raise BilibiliError(f"B站接口返回错误：{message or code}", code=code)
-        if not isinstance(payload, dict):
-            raise BilibiliError("B站接口返回格式异常")
-        return payload
-    except BilibiliError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("B站接口请求失败 url=%s error=%s", url, exc)
-        raise BilibiliError(f"B站接口请求失败：{exc}") from exc
+            response = httpx.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+            elapsed = time.monotonic() - started
+            logger.debug("B站请求完整URL=%s headers=%s", response.request.url, headers)
+            if response.status_code == 412:
+                retry_after = _set_rate_limited()
+                if retry_after == 10 and not retried:
+                    retried = True
+                    logger.warning("第一次 412，等待 10 秒重试一次：%s", response.url)
+                    time.sleep(RATE_LIMIT_FIRST_WAIT)
+                    continue
+                raise BilibiliRateLimited("B站接口限流中，稍后自动恢复", retry_after_seconds=retry_after)
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                logger.warning("B站接口 JSON 解析失败 url=%s status=%s body=%r", response.url, response.status_code, response.text[:300])
+                raise BilibiliError(f"B站接口返回无法解析：{exc}") from exc
+            code = payload.get("code") if isinstance(payload, dict) else None
+            message = payload.get("message") if isinstance(payload, dict) else ""
+            logger.debug("B站完整响应 JSON=%s", payload)
+            logger.info("B站接口返回 url=%s status=%s code=%s message=%s elapsed=%.2fs", response.url, response.status_code, code, message, elapsed)
+            if code == -412:
+                retry_after = _set_rate_limited()
+                if retry_after == 10 and not retried:
+                    retried = True
+                    logger.warning("第一次业务 412，等待 10 秒重试一次：%s", response.url)
+                    time.sleep(RATE_LIMIT_FIRST_WAIT)
+                    continue
+                raise BilibiliRateLimited("B站接口限流中，稍后自动恢复", retry_after_seconds=retry_after)
+            if code not in allow_codes:
+                raise BilibiliError(f"B站接口返回错误：{message or code}", code=code)
+            _reset_rate_limit_streak()
+            return payload
+        except BilibiliRateLimited:
+            raise
+        except BilibiliError:
+            raise
+        except Exception as exc:
+            logger.warning("B站接口请求失败 url=%s error=%s", url, exc)
+            raise BilibiliError(f"B站接口请求失败：{exc}") from exc
 
 
 def _get_html(url: str, referer: str | None = None) -> str:
@@ -252,7 +281,9 @@ def _sign_wbi_params(params: dict[str, Any]) -> dict[str, Any]:
         cleaned.append((key, text))
     cleaned.sort(key=lambda item: item[0])
     query = urlencode(cleaned, quote_via=quote, safe="")
-    signed["w_rid"] = hashlib.md5(f"{query}{_mixin_key(img_key, sub_key)}".encode("utf-8")).hexdigest()
+    mixin = _mixin_key(img_key, sub_key)
+    signed["w_rid"] = hashlib.md5(f"{query}{mixin}".encode("utf-8")).hexdigest()
+    logger.debug("WBI 签名 mixin_key=%s wts=%s query=%s w_rid=%s", mixin, signed["wts"], query, signed["w_rid"])
     return signed
 
 
@@ -335,22 +366,33 @@ def _videos_from_html(uid: str) -> list[dict[str, Any]]:
 
 
 def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
-    """获取 UP 主最近视频：WBI 签名优先，失败降级 HTML。"""
+    """旧接口优先，失败再用 WBI，最后降级 HTML。"""
+    legacy_url = f"{BILIBILI_API}/x/space/arc/search"
     try:
-        payload = _get_signed_json(
-            f"{BILIBILI_API}/x/space/wbi/arc/search",
-            {"mid": uid, "ps": 10, "pn": 1, "order": "pubdate"},
-            referer=f"{BILIBILI_SPACE}/{uid}",
-        )
+        payload = _get_json(legacy_url, params={"mid": uid, "ps": 10, "pn": 1, "order": "pubdate"}, referer=f"{BILIBILI_SPACE}/{uid}")
         data = payload.get("data") or {}
         video_list = ((data.get("list") or {}).get("vlist")) or []
+        logger.debug("B站视频接口来源=legacy uid=%s count=%s", uid, len(video_list))
+        return [_video_from_search_item(item, uid) for item in video_list if isinstance(item, dict) and item.get("bvid")]
+    except BilibiliRateLimited:
+        raise
+    except BilibiliError as exc:
+        logger.warning("旧版接口失败，尝试 WBI：%s", exc)
+
+    try:
+        payload = _get_signed_json(f"{BILIBILI_API}/x/space/wbi/arc/search", {"mid": uid, "ps": 10, "pn": 1, "order": "pubdate"}, referer=f"{BILIBILI_SPACE}/{uid}")
+        data = payload.get("data") or {}
+        video_list = ((data.get("list") or {}).get("vlist")) or []
+        logger.debug("B站视频接口来源=wbi uid=%s count=%s", uid, len(video_list))
         return [_video_from_search_item(item, uid) for item in video_list if isinstance(item, dict) and item.get("bvid")]
     except BilibiliRateLimited:
         raise
     except BilibiliError as exc:
         logger.warning("WBI 接口失败，降级 HTML：%s", exc)
     try:
-        return _videos_from_html(uid)
+        items = _videos_from_html(uid)
+        logger.debug("B站视频接口来源=html uid=%s count=%s", uid, len(items))
+        return items
     except BilibiliRateLimited:
         raise
     except BilibiliError as exc:
@@ -589,7 +631,7 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
     except BilibiliRateLimited as exc:
         creator.last_check_at = datetime.now()
         session.commit()
-        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True}
+        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True, "retry_after_seconds": getattr(exc, "retry_after_seconds", 0)}
     except BilibiliError as exc:
         errors.append(str(exc))
 
@@ -599,7 +641,7 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
         logger.warning("UP主 %s 视频刷新限流：%s", creator.uid, exc)
         creator.last_check_at = datetime.now()
         session.commit()
-        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True}
+        return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True, "retry_after_seconds": getattr(exc, "retry_after_seconds", 0)}
     except BilibiliError as exc:
         logger.warning("UP主 %s 视频刷新失败：%s", creator.uid, exc)
         creator.last_check_at = datetime.now()
@@ -686,7 +728,7 @@ def refresh_creators(session: Session, ids: list[int] | None = None) -> dict[str
         total_added = sum(int(item.get("result", {}).get("added", 0)) for item in results)
         failed = sum(1 for item in results if item.get("result", {}).get("error"))
         rate_limited = any(bool(item.get("result", {}).get("rate_limited")) for item in results)
-        retry_after = 0
+        retry_after = max((int(item.get("result", {}).get("retry_after_seconds", 0)) for item in results), default=0)
         return {
             "results": results,
             "total_added": total_added,
