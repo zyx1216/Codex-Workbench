@@ -852,6 +852,7 @@
         <td class="time">2026-10-16 13:19</td>
         <td><span class="tag">B站WBI</span><span class="tag">限流修复</span><b>B站 WBI 签名修复</b>：<ul><li>实现 WBI mixin_key、wts、w_rid 完整签名流程，支持未知账号 nav 返回。</li><li>所有 B站请求串行限速 2 秒，412/风控后进入 1 小时冷却。</li><li>WBI -352 自动刷新密钥并重试一次，仍失败时降级 HTML。</li><li>补充结构化请求日志、空视频处理和前端限流提示。</li></ul></td>
       </tr>
+      <tr><td class="ver">个人工作台 v3.0.2</td><td class="time">2026-10-16 13:48</td><td><span class="tag">刷新粒度</span><b>UP主刷新粒度优化</b>：<ul><li>新增单 UP 主刷新、批量勾选串行刷新和全部刷新三种方式。</li><li>全部刷新最多 2 个 UP 主并发，批量刷新 UP 主间隔至少 1 秒，并增加重复刷新锁。</li><li>UP 主卡片增加复选框、视频数、上次更新时间和单独刷新按钮。</li></ul></td></tr>
     </tbody>
   </table>
 
