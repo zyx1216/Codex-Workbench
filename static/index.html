@@ -22,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v2.14.0</div>
+    <div class="sidebar-version">v3.0.0</div>
   </aside>
 
   <main class="main">
@@ -133,41 +133,74 @@
     </section>
 
 
-    <!-- 订阅 -->
+    <!-- 订阅：RSS 与 B站 UP 主跟踪 -->
     <section class="tab" data-tab="feed">
-      <h2 class="section-title gradient-text">RSS 订阅</h2>
-
-      <div class="card glass form-card">
-        <div class="feed-head-row">
-          <h3 class="block-title">RSS 源管理</h3>
-          <div class="feed-head-actions">
-            <button class="btn btn-primary btn-sm" id="btn-add-rss" type="button">＋ 添加源</button>
-            <button class="btn btn-ghost btn-sm" id="btn-fetch-all-rss" type="button">全部抓取</button>
-          </div>
-        </div>
-        <p class="hint feed-tip">填写关注主题后，抓取时会由 AI 自动筛掉不相关内容；不填主题则全部进入待处理队列。</p>
+      <h2 class="section-title gradient-text">订阅</h2>
+      <div class="segmented feed-mode-tabs" role="group" aria-label="订阅类型">
+        <button type="button" class="segmented-btn active" id="feed-tab-rss" data-feed-tab="rss">RSS 订阅</button>
+        <button type="button" class="segmented-btn" id="feed-tab-creators" data-feed-tab="creators">UP 主跟踪</button>
       </div>
 
-      <h2 class="section-title">RSS 源</h2>
-      <div id="rss-source-list" class="feed-list"></div>
-
-      <h2 class="section-title">待处理队列</h2>
-      <div class="card glass batch-toolbar">
-        <label class="check-field">
-          <input type="checkbox" id="pending-select-all" />
-          <span>全选</span>
-        </label>
-        <button class="btn btn-primary btn-sm" id="btn-batch-process" type="button">批量处理</button>
-        <div class="batch-progress" id="batch-progress" hidden>
-          <div class="progress-track">
-            <div class="progress-bar" id="batch-progress-bar"></div>
+      <div id="feed-rss-panel">
+        <div class="card glass form-card">
+          <div class="feed-head-row">
+            <h3 class="block-title">RSS 源管理</h3>
+            <div class="feed-head-actions">
+              <button class="btn btn-primary btn-sm" id="btn-add-rss" type="button">＋ 添加源</button>
+              <button class="btn btn-ghost btn-sm" id="btn-fetch-all-rss" type="button">全部抓取</button>
+            </div>
           </div>
-          <div class="progress-text" id="batch-progress-text">准备中…</div>
+          <p class="hint feed-tip">填写关注主题后，抓取时会由 AI 自动筛掉不相关内容；不填主题则全部进入待处理队列。</p>
         </div>
+        <h2 class="section-title">RSS 源</h2>
+        <div id="rss-source-list" class="feed-list"></div>
+        <h2 class="section-title">待处理队列</h2>
+        <div class="card glass batch-toolbar">
+          <label class="check-field"><input type="checkbox" id="pending-select-all" /><span>全选</span></label>
+          <button class="btn btn-primary btn-sm" id="btn-batch-process" type="button">批量处理</button>
+          <div class="batch-progress" id="batch-progress" hidden>
+            <div class="progress-track"><div class="progress-bar" id="batch-progress-bar"></div></div>
+            <div class="progress-text" id="batch-progress-text">准备中…</div>
+          </div>
+        </div>
+        <div id="pending-list" class="feed-list"></div>
       </div>
-      <div id="pending-list" class="feed-list"></div>
+
+      <div id="feed-creators-panel" hidden>
+        <div class="creator-stats" id="creator-stats">
+          <div class="card glass creator-stat"><span>👤</span><strong id="creator-stat-count">0</strong><small>已跟踪 UP 主</small></div>
+          <div class="card glass creator-stat"><span>🎬</span><strong id="creator-stat-today">0</strong><small>今日新视频</small></div>
+          <div class="card glass creator-stat"><span>✅</span><strong id="creator-stat-worth">0</strong><small>AI 判定值得看</small></div>
+          <div class="card glass creator-stat"><span>👍</span><strong id="creator-stat-feedback">0</strong><small>已反馈视频</small></div>
+        </div>
+
+        <div class="card glass creator-toolbar">
+          <input type="text" id="creator-input" class="input" placeholder="粘贴 UID 或 https://space.bilibili.com/123456" />
+          <button class="btn btn-primary" id="btn-add-creator" type="button">添加 UP 主</button>
+          <button class="btn btn-ghost" id="btn-refresh-creators" type="button">立即刷新</button>
+        </div>
+
+        <div class="toolbar creator-filter-bar">
+          <input type="text" id="video-filter-category" class="input" placeholder="按分类筛选，如 AI教程" />
+          <select id="video-filter-decision" class="input">
+            <option value="">全部 AI 判定</option>
+            <option value="值得看">值得看</option>
+            <option value="一般">一般</option>
+            <option value="不值得看">不值得看</option>
+          </select>
+        </div>
+
+        <h2 class="section-title">已跟踪 UP 主</h2>
+        <div id="creator-list" class="creator-list"></div>
+
+        <div class="card glass batch-toolbar video-batch-toolbar">
+          <label class="check-field"><input type="checkbox" id="video-select-all" /><span>全选视频</span></label>
+          <span class="notes-batch-count" id="video-selected-count">已选 0 条</span>
+          <button class="btn btn-primary btn-sm" id="btn-batch-export-videos" type="button">批量导出选中</button>
+        </div>
+        <div id="video-list" class="video-list"></div>
+      </div>
     </section>
-
 
     <!-- AI 助手 -->
     <section class="tab" data-tab="qa">

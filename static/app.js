@@ -26,6 +26,7 @@ function initTabs() {
       } else if (target === "feed") {
         loadRssSources();
         loadPendingItems();
+        loadCreatorDashboard();
       } else if (target === "home") {
         loadStats();
         loadRecentNotes();
@@ -1893,6 +1894,18 @@ async function reprocessPreview() {
 }
 
 function bindFeedPage() {
+  $$("[data-feed-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => switchFeedMode(btn.dataset.feedTab));
+  });
+  $("#btn-add-creator").addEventListener("click", addBilibiliCreator);
+  $("#btn-refresh-creators").addEventListener("click", refreshBilibiliCreators);
+  $("#video-filter-category").addEventListener("input", () => {
+    if (creatorFilterTimer) clearTimeout(creatorFilterTimer);
+    creatorFilterTimer = setTimeout(loadBilibiliVideos, 250);
+  });
+  $("#video-filter-decision").addEventListener("change", loadBilibiliVideos);
+  $("#video-select-all").addEventListener("change", toggleAllBilibiliVideos);
+  $("#btn-batch-export-videos").addEventListener("click", exportSelectedBilibiliVideos);
   $("#btn-add-rss").addEventListener("click", openRssModal);
   $("#btn-fetch-all-rss").addEventListener("click", fetchAllRssSources);
   $("#btn-save-rss").addEventListener("click", saveRssSource);
@@ -4815,3 +4828,265 @@ document.addEventListener("DOMContentLoaded", () => {
   loadScheduleNoteOptions();
   loadHomeSchedules();
 });
+
+
+/* ============ v3.0：B站 UP 主跟踪 ============ */
+let creatorVideos = [];
+let creatorFilterTimer = null;
+const selectedBilibiliVideoIds = new Set();
+
+function switchFeedMode(mode) {
+  const isCreators = mode === "creators";
+  $$("[data-feed-tab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.feedTab === mode));
+  $("#feed-rss-panel").hidden = isCreators;
+  $("#feed-creators-panel").hidden = !isCreators;
+  if (isCreators) loadCreatorDashboard();
+}
+
+async function loadCreatorDashboard() {
+  await Promise.all([loadBilibiliCreators(), loadBilibiliStats(), loadBilibiliVideos()]);
+}
+
+async function loadBilibiliStats() {
+  try {
+    const res = await fetchJson("/api/videos/stats");
+    const data = res.data || {};
+    $("#creator-stat-count").textContent = data.creators ?? 0;
+    $("#creator-stat-today").textContent = data.today_videos ?? 0;
+    $("#creator-stat-worth").textContent = data.worth_watching ?? 0;
+    $("#creator-stat-feedback").textContent = data.feedback_count ?? 0;
+  } catch (_) { /* 统计失败不影响页面其它区域 */ }
+}
+
+async function loadBilibiliCreators() {
+  const box = $("#creator-list");
+  try {
+    const res = await fetchJson("/api/creators");
+    const items = res.data || [];
+    box.innerHTML = "";
+    if (!items.length) {
+      box.appendChild(makeFeedEmpty("👤", "还没有跟踪 UP 主，先在上方粘贴 UID 或空间链接"));
+      return;
+    }
+    items.forEach((creator) => box.appendChild(buildBilibiliCreatorCard(creator)));
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(makeFeedEmpty("⚠️", `UP主加载失败：${err.message}`));
+  }
+}
+
+function buildBilibiliCreatorCard(creator) {
+  const card = document.createElement("div");
+  card.className = "card glass creator-card";
+  const img = document.createElement("img");
+  img.className = "creator-avatar";
+  img.alt = "头像";
+  img.src = creator.face || "";
+  const main = document.createElement("div");
+  main.className = "creator-card-main";
+  main.innerHTML = `<div class="feed-item-title">${escapeHtml(creator.name || `UP主${creator.uid}`)}</div><div class="feed-item-url">UID：${escapeHtml(creator.uid)}</div><div class="feed-item-meta"><span>最后检查：${creator.last_check_at ? formatTime(creator.last_check_at) : "未检查"}</span></div>`;
+  const remove = makeButton("btn btn-danger btn-sm", "取消跟踪");
+  remove.addEventListener("click", async () => {
+    if (!confirm(`确定取消跟踪「${creator.name || creator.uid}」吗？已入库视频会保留。`)) return;
+    try {
+      await fetchJson(`/api/creators/${creator.id}`, { method: "DELETE" });
+      toast("已取消跟踪", "success");
+      await loadCreatorDashboard();
+    } catch (err) { toast(err.message || "删除失败", "error"); }
+  });
+  card.append(img, main, remove);
+  return card;
+}
+
+function formatBilibiliCount(value) {
+  const number = Number(value || 0);
+  if (number >= 100000000) return `${(number / 100000000).toFixed(1)}亿`;
+  if (number >= 10000) return `${(number / 10000).toFixed(1)}万`;
+  return String(number);
+}
+
+async function loadBilibiliVideos() {
+  const box = $("#video-list");
+  try {
+    const params = new URLSearchParams();
+    const category = $("#video-filter-category").value.trim();
+    const decision = $("#video-filter-decision").value;
+    if (category) params.set("category", category);
+    if (decision) params.set("decision", decision);
+    const res = await fetchJson(`/api/videos${params.toString() ? `?${params}` : ""}`);
+    creatorVideos = res.data || [];
+    selectedBilibiliVideoIds.clear();
+    box.innerHTML = "";
+    if (!creatorVideos.length) {
+      box.appendChild(makeFeedEmpty("🎬", "暂无视频，点击“立即刷新”抓取 UP 主新视频"));
+      syncBilibiliVideoSelection();
+      return;
+    }
+    creatorVideos.forEach((video) => box.appendChild(buildBilibiliVideoCard(video)));
+    syncBilibiliVideoSelection();
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(makeFeedEmpty("⚠️", `视频加载失败：${err.message}`));
+  }
+}
+
+function buildBilibiliVideoCard(video) {
+  const card = document.createElement("div");
+  card.className = "card glass video-card";
+  card.dataset.videoId = video.id;
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "bilibili-video-check";
+  check.addEventListener("change", () => {
+    if (check.checked) selectedBilibiliVideoIds.add(video.id);
+    else selectedBilibiliVideoIds.delete(video.id);
+    syncBilibiliVideoSelection();
+  });
+  const cover = document.createElement("img");
+  cover.className = "video-cover";
+  cover.alt = "封面";
+  cover.src = video.cover || "";
+  const body = document.createElement("div");
+  body.className = "video-card-body";
+  const score = video.ai_score === null || video.ai_score === undefined ? 0 : Number(video.ai_score);
+  const scoreClass = score >= 70 ? "good" : (score >= 40 ? "medium" : "bad");
+  const decision = video.ai_decision || "一般";
+  const title = document.createElement("a");
+  title.className = "video-title";
+  title.href = video.url;
+  title.target = "_blank";
+  title.rel = "noopener noreferrer";
+  title.textContent = `${video.popularity_tag === "爆款" ? "🔥 " : ""}${video.title || "无标题"}`;
+  title.title = video.popularity_reason || "";
+  const meta = document.createElement("div");
+  meta.className = "video-meta";
+  meta.innerHTML = `<span>${escapeHtml(video.uid)}</span><span>${video.publish_time ? formatTime(video.publish_time) : "时间未知"}</span><span>播放 ${formatBilibiliCount(video.play)}</span><span>点赞率 ${(Number(video.like_rate || 0) * 100).toFixed(1)}%</span>`;
+  const aiRow = document.createElement("div");
+  aiRow.className = "video-ai-row";
+  aiRow.innerHTML = `<span class="video-score ${scoreClass}">${score}分</span><span class="video-decision">${escapeHtml(decision)}</span><span class="video-category">${escapeHtml(video.category || "未分类")}</span><span class="video-hit">${escapeHtml(video.popularity_tag || "正常")}</span>`;
+  const reason = document.createElement("div");
+  reason.className = "video-reason";
+  reason.textContent = video.ai_reason || "暂无 AI 推荐理由";
+  const actions = document.createElement("div");
+  actions.className = "video-actions";
+  const feedbackButtons = [
+    ["值得看", "👍 值得看"],
+    ["不值得看", "👎 不值得看"],
+    ["待确认", "⏭️ 待确认"],
+  ];
+  feedbackButtons.forEach(([value, label]) => {
+    const btn = makeButton(`btn btn-ghost btn-sm ${video.user_feedback === value ? "active" : ""}`, label);
+    btn.addEventListener("click", () => saveBilibiliFeedback(video.id, value));
+    actions.appendChild(btn);
+  });
+  const exportBtn = makeButton("btn btn-primary btn-sm", video.note_exported ? "✅ 重新导出" : "生成笔记");
+  exportBtn.addEventListener("click", () => exportBilibiliVideo(video.id));
+  actions.appendChild(exportBtn);
+  body.append(title, meta, aiRow, reason, actions);
+  card.append(check, cover, body);
+  return card;
+}
+
+function syncBilibiliVideoSelection() {
+  const checks = $$(".bilibili-video-check");
+  $("#video-selected-count").textContent = `已选 ${selectedBilibiliVideoIds.size} 条`;
+  $("#video-select-all").checked = checks.length > 0 && selectedBilibiliVideoIds.size === checks.length;
+}
+
+function toggleAllBilibiliVideos(event) {
+  selectedBilibiliVideoIds.clear();
+  $$(".bilibili-video-check").forEach((check) => {
+    check.checked = event.target.checked;
+    if (event.target.checked) selectedBilibiliVideoIds.add(Number(check.closest(".video-card").dataset.videoId));
+  });
+  syncBilibiliVideoSelection();
+}
+
+async function addBilibiliCreator() {
+  const input = $("#creator-input");
+  const value = input.value.trim();
+  if (!value) { toast("请先输入 UP主 UID 或空间链接", "warning"); return; }
+  const btn = $("#btn-add-creator");
+  btn.disabled = true;
+  btn.textContent = "添加中…";
+  try {
+    const res = await fetchJson("/api/creators", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({value}),
+    });
+    input.value = "";
+    toast(res.message || "UP主已添加", "success");
+    await loadCreatorDashboard();
+  } catch (err) {
+    toast(err.message || "添加失败", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "添加 UP 主";
+  }
+}
+
+async function refreshBilibiliCreators() {
+  const btn = $("#btn-refresh-creators");
+  btn.disabled = true;
+  btn.textContent = "刷新中…";
+  try {
+    const res = await fetchJson("/api/creators/refresh", {method: "POST"});
+    toast(`刷新完成，新增 ${res.data?.total_added ?? 0} 条视频`, "success");
+    await loadCreatorDashboard();
+  } catch (err) {
+    toast(err.message || "刷新失败", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "立即刷新";
+  }
+}
+
+async function saveBilibiliFeedback(videoId, feedback) {
+  try {
+    await fetchJson(`/api/videos/${videoId}/feedback`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({feedback}),
+    });
+    toast(feedback === "待确认" ? "已恢复待确认" : `已标记：${feedback}`, "success");
+    await loadBilibiliVideos();
+    await loadBilibiliStats();
+  } catch (err) {
+    toast(err.message || "反馈失败", "error");
+  }
+}
+
+async function exportBilibiliVideo(videoId) {
+  try {
+    const res = await fetchJson(`/api/videos/${videoId}/export`, {method: "POST"});
+    toast(res.message || "笔记已导出", "success");
+    await loadBilibiliVideos();
+  } catch (err) {
+    toast(err.message || "导出失败", "error");
+  }
+}
+
+async function exportSelectedBilibiliVideos() {
+  if (!selectedBilibiliVideoIds.size) {
+    toast("请先勾选要导出的视频", "warning");
+    return;
+  }
+  const btn = $("#btn-batch-export-videos");
+  btn.disabled = true;
+  btn.textContent = "导出中…";
+  try {
+    const res = await fetchJson("/api/videos/export-batch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({video_ids: Array.from(selectedBilibiliVideoIds)}),
+    });
+    toast(res.message || "批量导出完成", "success");
+    await loadBilibiliVideos();
+  } catch (err) {
+    toast(err.message || "批量导出失败", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "批量导出选中";
+  }
+}

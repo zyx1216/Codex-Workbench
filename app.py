@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 import config
 from services import (
     ai_service,
+    bilibili_service,
     backup_service,
     dashboard_service,
     agent_service,
@@ -1301,3 +1302,104 @@ def agent_summarize(payload: AgentSummarizeRequest):
 
 # 静态资源放在 /static 下，需在所有路由之后挂载
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# ============ v3.0：B站 UP 主跟踪、视频分析与 Obsidian 导出 ============
+class CreatorAddRequest(BaseModel):
+    """添加 B站 UP 主请求体。"""
+
+    value: str
+
+
+class VideoFeedbackRequest(BaseModel):
+    """视频用户反馈请求体。"""
+
+    feedback: str
+
+
+class VideoBatchExportRequest(BaseModel):
+    """视频批量导出请求体。"""
+
+    video_ids: list[int] = []
+
+
+@app.get("/api/creators")
+def get_creators(db: Session = Depends(get_db)):
+    """返回已跟踪的 UP 主列表。"""
+    return ok([bilibili_service.serialize_creator(item) for item in bilibili_service.list_creators(db)])
+
+
+@app.post("/api/creators")
+def post_creator(payload: CreatorAddRequest, db: Session = Depends(get_db)):
+    """添加 UP 主并立即尝试抓取最近视频。"""
+    try:
+        result = bilibili_service.add_creator(db, payload.value)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok(result, message="UP主已添加")
+
+
+@app.delete("/api/creators/{creator_id}")
+def delete_creator(creator_id: int, db: Session = Depends(get_db)):
+    """取消跟踪 UP 主，已入库视频保留作历史。"""
+    try:
+        bilibili_service.delete_creator(db, creator_id)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok(None, message="已取消跟踪")
+
+
+@app.post("/api/creators/refresh")
+def refresh_creators(db: Session = Depends(get_db)):
+    """手动刷新全部启用的 UP 主。"""
+    return ok(bilibili_service.refresh_all(db), message="刷新完成")
+
+
+@app.get("/api/videos/stats")
+def get_bilibili_video_stats(db: Session = Depends(get_db)):
+    """返回 UP 主跟踪页顶部统计。"""
+    return ok(bilibili_service.get_stats(db))
+
+
+@app.get("/api/videos")
+def get_bilibili_videos(
+    category: str = Query(default=""),
+    decision: str = Query(default=""),
+    creator_uid: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    """返回视频列表，支持分类、AI 决策和 UP 主筛选。"""
+    items = bilibili_service.list_videos(db, category=category, decision=decision, creator_uid=creator_uid)
+    return ok([bilibili_service.serialize_video(item) for item in items])
+
+
+@app.post("/api/videos/{video_id}/feedback")
+def post_video_feedback(video_id: int, payload: VideoFeedbackRequest, db: Session = Depends(get_db)):
+    """提交用户反馈，反馈会进入后续 AI 筛选示例。"""
+    try:
+        video = bilibili_service.set_feedback(db, video_id, payload.feedback)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok(bilibili_service.serialize_video(video), message="反馈已保存")
+
+
+@app.post("/api/videos/export-batch")
+def export_video_batch(payload: VideoBatchExportRequest, db: Session = Depends(get_db)):
+    """批量导出视频为 Obsidian Markdown。"""
+    try:
+        result = bilibili_service.export_videos(db, payload.video_ids)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok(result, message=f"已导出 {len(result.get('exported', []))} 条")
+
+
+@app.post("/api/videos/{video_id}/export")
+def export_video_note(video_id: int, db: Session = Depends(get_db)):
+    """生成或覆盖单条视频的 Obsidian Markdown。"""
+    try:
+        video, path = bilibili_service.export_video(db, video_id)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    except OSError as exc:
+        return fail(f"文件写入失败：{exc}")
+    return ok({"video": bilibili_service.serialize_video(video), "path": str(path)}, message="笔记已导出到 Obsidian")

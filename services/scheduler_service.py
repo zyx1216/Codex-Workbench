@@ -22,13 +22,14 @@ from sqlalchemy import select
 
 import config
 from models.models import FetchLog
-from services import rss_service
+from services import bilibili_service, rss_service
 from services.db import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 # 每日任务固定 ID，更新时间时直接替换
 JOB_ID = "daily_rss_fetch"
+BILIBILI_JOB_ID = "daily_bilibili_refresh"
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 # 防止手动任务和定时任务同时跑两批全量抓取
@@ -184,6 +185,28 @@ def _apply_job() -> None:
         _scheduled_job,
         trigger=CronTrigger(hour=hour, minute=minute, timezone=_scheduler.timezone),
         id=JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+
+def _bilibili_scheduled_job() -> None:
+    """每天凌晨刷新 B站 UP 主视频，异常只写日志。"""
+    try:
+        with SessionLocal() as session:
+            result = bilibili_service.refresh_all(session)
+        logger.info("B站UP主刷新完成，新增 %s 条", result.get("total_added", 0))
+    except Exception:
+        logger.exception("B站UP主定时刷新失败")
+
+
+def _apply_bilibili_job() -> None:
+    _scheduler.add_job(
+        _bilibili_scheduled_job,
+        trigger=CronTrigger(hour=3, minute=0, timezone="Asia/Shanghai"),
+        id=BILIBILI_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,

@@ -17,12 +17,13 @@ DB_PATH = DATA_DIR / "database.db"
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 AI_CONFIG_PATH = DATA_DIR / "ai_config.json"
 SCHEDULER_CONFIG_PATH = DATA_DIR / "scheduler_config.json"
+OBSIDIAN_NOTES_DIR = BASE_DIR / "obsidian_notes"
 
 APP_NAME = "个人工作台"
-APP_VERSION = "2.14.0"
+APP_VERSION = "3.0.0"
 
 
 def ensure_dirs() -> None:
     """确保运行目录存在；已存在时不报错、不清空。"""
-    for directory in (DATA_DIR, UPLOAD_DIR, EXPORT_DIR, VECTOR_DB_DIR, CACHE_DIR, AUTO_BACKUP_DIR):
+    for directory in (DATA_DIR, UPLOAD_DIR, EXPORT_DIR, VECTOR_DB_DIR, CACHE_DIR, AUTO_BACKUP_DIR, OBSIDIAN_NOTES_DIR):
         directory.mkdir(parents=True, exist_ok=True)

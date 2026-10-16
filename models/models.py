@@ -195,3 +195,54 @@ class Schedule(Base):
     note_id = Column(Integer, nullable=True, comment="关联笔记 ID")
     color = Column(String(20), nullable=False, default="#5b8def", comment="日历颜色")
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+class BilibiliCreator(Base):
+    """B 站 UP 主跟踪表。"""
+
+    __tablename__ = "bilibili_creators"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(String(32), nullable=False, unique=True, index=True, comment="B站 UID")
+    name = Column(String(200), nullable=False, default="", comment="UP主名称")
+    face = Column(String(500), nullable=False, default="", comment="头像 URL")
+    added_at = Column(DateTime, default=datetime.now, nullable=False, comment="添加时间")
+    last_check_at = Column(DateTime, nullable=True, comment="最后检查时间")
+    enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
+
+
+class BilibiliVideo(Base):
+    """B 站视频表。"""
+
+    __tablename__ = "bilibili_videos"
+    __table_args__ = (
+        CheckConstraint(
+            "ai_score IS NULL OR (ai_score >= 0 AND ai_score <= 100)",
+            name="ck_bilibili_videos_ai_score",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bvid = Column(String(32), nullable=False, unique=True, index=True, comment="BV号")
+    uid = Column(String(32), nullable=False, index=True, comment="B站 UID")
+    title = Column(String(500), nullable=False, default="", comment="视频标题")
+    description = Column(Text, nullable=False, default="", comment="视频简介")
+    publish_time = Column(DateTime, nullable=True, comment="发布时间")
+    duration = Column(Integer, nullable=False, default=0, comment="时长秒数")
+    play = Column(Integer, nullable=False, default=0, comment="播放量")
+    like = Column(Integer, nullable=False, default=0, comment="点赞数")
+    coin = Column(Integer, nullable=False, default=0, comment="投币数")
+    favorite = Column(Integer, nullable=False, default=0, comment="收藏数")
+    comment = Column(Integer, nullable=False, default=0, comment="评论数")
+    share = Column(Integer, nullable=False, default=0, comment="转发数")
+    cover = Column(String(500), nullable=False, default="", comment="封面 URL")
+    ai_score = Column(Integer, nullable=True, comment="AI 值得看分数 0-100")
+    ai_decision = Column(String(20), nullable=False, default="一般", comment="值得看/一般/不值得看")
+    ai_reason = Column(String(300), nullable=False, default="", comment="AI 推荐理由")
+    category = Column(String(50), nullable=False, default="未分类", comment="AI 内容分类")
+    user_feedback = Column(String(20), nullable=False, default="待确认", comment="待确认/值得看/不值得看")
+    popularity_tag = Column(String(20), nullable=False, default="正常", comment="爆款/有潜力/正常/低迷")
+    popularity_reason = Column(String(200), nullable=False, default="", comment="爆款判断说明")
+    note_exported = Column(Boolean, nullable=False, default=False, comment="是否已导出 Obsidian 笔记")
+    exported_path = Column(String(500), nullable=False, default="", comment="导出文件路径")
+    created_at = Column(DateTime, default=datetime.now, nullable=False, comment="入库时间")
