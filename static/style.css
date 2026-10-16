@@ -3496,3 +3496,7 @@ kbd {
   .creator-card { grid-template-columns: auto auto 1fr; }
   .creator-card-actions { grid-column: 3; }
 }
+
+.video-invalid { opacity: 0.62; filter: grayscale(0.65); }
+.video-invalid .video-title { color: var(--text-dim); text-decoration: line-through; }
+.video-invalid .video-actions { pointer-events: none; }

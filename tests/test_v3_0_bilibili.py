@@ -56,12 +56,13 @@ class BilibiliServiceTests(unittest.TestCase):
         video = BilibiliVideo(bvid="BV1TEST003", uid="123", title="测试导出", description="简介", play=123, like=45, comment=6, share=2, ai_score=80, ai_decision="值得看", category="AI教程", popularity_tag="正常")
         self.session.add(video)
         self.session.commit()
-        with tempfile.TemporaryDirectory() as tmp, patch.object(config, "OBSIDIAN_NOTES_DIR", Path(tmp)), patch.object(bilibili_service, "_ai_summary", return_value={"summary": "一句话", "core_points": ["要点"], "knowledge_points": ["知识"]}):
-            exported, path = bilibili_service.export_video(self.session, video.id)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(config, "OBSIDIAN_NOTES_DIR", Path(tmp)), patch.object(bilibili_service, "fetch_video_subtitle", return_value=None):
+            exported, path, source = bilibili_service.export_video(self.session, video.id, confirm_simplified=True)
             self.assertTrue(path.exists())
             text = path.read_text(encoding="utf-8")
             self.assertIn("source: bilibili", text)
             self.assertIn("## 一句话概括", text)
+            self.assertEqual(source, "metadata")
             self.assertTrue(exported.note_exported)
 
 

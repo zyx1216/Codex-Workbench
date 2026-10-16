@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
@@ -339,6 +339,10 @@ def _video_from_search_item(item: dict[str, Any], uid: str) -> dict[str, Any]:
         "comment": _to_int(item.get("comment") or item.get("review")),
         "share": _to_int(item.get("share")),
         "cover": str(item.get("pic") or "")[:500],
+        "cid": _to_int(item.get("cid")) or None,
+        "pages": item.get("pages") or [],
+        "is_valid": True,
+        "invalid_reason": "",
     }
 
 
@@ -401,14 +405,17 @@ def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
 
 
 def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
-    """补充单个视频的统计信息，详情失败时保留列表数据。"""
+    """补充视频详情和有效性，网络/限流错误不直接判定失效。"""
     try:
         payload = _get_json(f"{BILIBILI_API}/x/web-interface/view", params={"bvid": bvid}, referer=f"{BILIBILI_VIDEO}/{bvid}/")
         data = payload.get("data") or {}
         stat = data.get("stat") or {}
+        status = data.get("status", 1)
+        valid = status != 0
         result = dict(fallback)
         result.update({
             "bvid": bvid,
+            "cid": _to_int(data.get("cid")) or None,
             "title": str(data.get("title") or fallback.get("title") or "无标题")[:500],
             "description": str(data.get("desc") or fallback.get("description") or "")[:3000],
             "publish_time": _parse_publish_time(data.get("pubdate")) or fallback.get("publish_time"),
@@ -420,19 +427,25 @@ def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
             "comment": _to_int(stat.get("reply") or fallback.get("comment")),
             "share": _to_int(stat.get("share") or fallback.get("share")),
             "cover": str(data.get("pic") or fallback.get("cover") or "")[:500],
+            "pages": data.get("pages") or fallback.get("pages") or [],
+            "is_valid": valid,
+            "invalid_reason": "" if valid else "视频已失效或不可见（status=0）",
         })
         return result
     except BilibiliRateLimited:
         raise
     except BilibiliError as exc:
-        logger.info("视频详情失败，使用列表数据：%s", exc)
-        return fallback
+        logger.info("视频详情失败，保留原有效性：%s", exc)
+        result = dict(fallback)
+        result.setdefault("is_valid", True)
+        result.setdefault("invalid_reason", "")
+        return result
 
 
 def serialize_creator(creator: BilibiliCreator, session: Session | None = None) -> dict[str, Any]:
     video_count = 0
     if session is not None:
-        video_count = int(session.scalar(select(func.count()).select_from(BilibiliVideo).where(BilibiliVideo.uid == creator.uid)) or 0)
+        video_count = int(session.scalar(select(func.count()).select_from(BilibiliVideo).where(BilibiliVideo.uid == creator.uid, BilibiliVideo.is_valid == True)) or 0)
     return {
         "id": creator.id,
         "uid": creator.uid,
@@ -462,6 +475,10 @@ def serialize_video(video: BilibiliVideo) -> dict[str, Any]:
         "comment": video.comment,
         "share": video.share,
         "cover": video.cover,
+        "cid": video.cid,
+        "is_valid": bool(video.is_valid),
+        "invalid_reason": video.invalid_reason or "",
+        "last_validated_at": video.last_validated_at.isoformat() if video.last_validated_at else None,
         "url": f"{BILIBILI_VIDEO}/{video.bvid}/",
         "ai_score": video.ai_score,
         "ai_decision": video.ai_decision,
@@ -620,7 +637,7 @@ UP主：{creator_name}
 
 
 def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any]:
-    """刷新单个 UP 主的视频；单个接口失败只记录，不让整个页面崩。"""
+    """刷新单个 UP 主；新视频验证详情，旧视频最多每 24 小时复检。"""
     added = 0
     updated = 0
     errors: list[str] = []
@@ -638,42 +655,45 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
     try:
         videos = fetch_creator_videos(creator.uid)
     except BilibiliRateLimited as exc:
-        logger.warning("UP主 %s 视频刷新限流：%s", creator.uid, exc)
         creator.last_check_at = datetime.now()
         session.commit()
         return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": True, "retry_after_seconds": getattr(exc, "retry_after_seconds", 0)}
     except BilibiliError as exc:
-        logger.warning("UP主 %s 视频刷新失败：%s", creator.uid, exc)
         creator.last_check_at = datetime.now()
         session.commit()
         return {"added": 0, "updated": 0, "error": str(exc), "rate_limited": False}
 
-    existing = {
-        item.bvid: item
-        for item in session.scalars(select(BilibiliVideo).where(BilibiliVideo.uid == creator.uid)).all()
-    }
+    existing = {item.bvid: item for item in session.scalars(select(BilibiliVideo).where(BilibiliVideo.uid == creator.uid)).all()}
     new_videos: list[BilibiliVideo] = []
+    stale_before = datetime.now() - timedelta(hours=24)
     for item in videos:
         bvid = item.get("bvid")
         if not bvid:
             continue
         video = existing.get(bvid)
-        if video is None:
-            detail = fetch_video_detail(bvid, item)
+        is_new = video is None
+        need_detail = is_new or video.last_validated_at is None or video.last_validated_at < stale_before or not video.is_valid
+        detail: dict[str, Any] = item
+        if need_detail:
+            try:
+                detail = fetch_video_detail(bvid, item)
+                time.sleep(0.5)
+            except BilibiliRateLimited as exc:
+                logger.warning("视频有效性验证限流，跳过本次验证 bvid=%s", bvid)
+                errors.append(str(exc))
+                detail = item
+            except BilibiliError as exc:
+                logger.warning("视频有效性验证失败 bvid=%s：%s", bvid, exc)
+                detail = item
+
+        if is_new:
             video = BilibiliVideo(
-                bvid=bvid,
-                uid=creator.uid,
-                title=detail["title"],
-                description=detail["description"],
-                publish_time=detail["publish_time"],
-                duration=detail["duration"],
-                play=detail["play"],
-                like=detail["like"],
-                coin=detail["coin"],
-                favorite=detail["favorite"],
-                comment=detail["comment"],
-                share=detail["share"],
-                cover=detail["cover"],
+                bvid=bvid, uid=creator.uid, title=detail["title"], description=detail["description"],
+                publish_time=detail["publish_time"], duration=detail["duration"], play=detail["play"],
+                like=detail["like"], coin=detail["coin"], favorite=detail["favorite"], comment=detail["comment"],
+                share=detail["share"], cover=detail["cover"], cid=detail.get("cid"),
+                is_valid=bool(detail.get("is_valid", True)), invalid_reason=detail.get("invalid_reason", ""),
+                last_validated_at=datetime.now() if need_detail else None,
             )
             session.add(video)
             new_videos.append(video)
@@ -682,14 +702,21 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
             for key in ("title", "description", "publish_time", "duration", "play", "like", "coin", "favorite", "comment", "share", "cover"):
                 if item.get(key) is not None:
                     setattr(video, key, item[key])
+            if need_detail:
+                video.cid = detail.get("cid") or video.cid
+                video.is_valid = bool(detail.get("is_valid", video.is_valid))
+                video.invalid_reason = detail.get("invalid_reason", "") if not video.is_valid else ""
+                video.last_validated_at = datetime.now()
             updated += 1
     creator.last_check_at = datetime.now()
     session.commit()
     _recalculate_popularity(session, creator.uid)
     for video in new_videos:
+        if not video.is_valid:
+            continue
         try:
             apply_ai_filter(session, video, creator.name)
-        except Exception as exc:  # noqa: BLE001 - 单条 AI 失败不影响入库
+        except Exception as exc:
             logger.warning("视频 AI 筛选异常 %s：%s", video.bvid, exc)
     return {"added": added, "updated": updated, "error": "；".join(errors), "rate_limited": False}
 
@@ -745,8 +772,10 @@ def refresh_all(session: Session) -> dict[str, Any]:
     return refresh_creators(session)
 
 
-def list_videos(session: Session, category: str = "", decision: str = "", creator_uid: str = "") -> list[BilibiliVideo]:
+def list_videos(session: Session, category: str = "", decision: str = "", creator_uid: str = "", include_invalid: bool = False) -> list[BilibiliVideo]:
     statement = select(BilibiliVideo)
+    if not include_invalid:
+        statement = statement.where(BilibiliVideo.is_valid == True)  # noqa: E712
     if category:
         statement = statement.where(BilibiliVideo.category == category)
     if decision:
@@ -769,6 +798,8 @@ def set_feedback(session: Session, video_id: int, feedback: str) -> BilibiliVide
     if feedback not in ("待确认", "值得看", "不值得看"):
         raise BilibiliError("反馈只能是 待确认、值得看 或 不值得看")
     video = get_video(session, video_id)
+    if not video.is_valid:
+        raise BilibiliError("视频已失效，无法提交反馈")
     video.user_feedback = feedback
     session.commit()
     session.refresh(video)
@@ -815,81 +846,194 @@ UP主：{creator_name}
         return _fallback_summary(video)
 
 
-def export_video(session: Session, video_id: int) -> tuple[BilibiliVideo, Path]:
-    """生成 Obsidian Markdown 文件并记录导出状态。"""
+def _subtitle_url(value: str) -> str:
+    value = str(value or "").strip()
+    if value.startswith("//"):
+        return "https:" + value
+    return value
+
+
+def fetch_video_subtitle(bvid: str, cid: int | None) -> str | None:
+    """获取 B站中文字幕文本；无字幕、限流或解析失败返回 None。"""
+    if not cid:
+        return None
+    try:
+        payload = _get_json(f"{BILIBILI_API}/x/player/v2", params={"bvid": bvid, "cid": cid}, referer=f"{BILIBILI_VIDEO}/{bvid}/")
+        subtitles = (((payload.get("data") or {}).get("subtitle") or {}).get("subtitles")) or []
+        chosen = next((item for item in subtitles if "zh" in str(item.get("lan", "")).lower()), subtitles[0] if subtitles else None)
+        if not chosen:
+            return None
+        url = _subtitle_url(chosen.get("subtitle_url", ""))
+        if not url:
+            return None
+        raw = _get_html(url, referer=f"{BILIBILI_VIDEO}/{bvid}/")
+        body = json.loads(raw).get("body") or []
+        ordered = sorted(body, key=lambda item: float(item.get("from", 0) or 0))
+        text = "\n".join(str(item.get("content") or "").strip() for item in ordered if str(item.get("content") or "").strip())
+        return text or None
+    except BilibiliRateLimited:
+        raise
+    except (BilibiliError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning("字幕获取失败 bvid=%s：%s", bvid, exc)
+        return None
+
+
+def _split_subtitle(text: str, limit: int = 4000, overlap: int = 300) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + limit, len(text))
+        chunks.append(text[start:end])
+        if end >= len(text):
+            break
+        start = max(start + 1, end - overlap)
+    return chunks
+
+
+def _ai_note_from_context(title: str, context: str) -> dict[str, Any]:
+    prompt = f"""请根据下面的视频内容生成详细中文笔记，只输出 JSON，不要 Markdown。
+JSON 格式：{{"summary":"一句话概括","core_points":["要点1"],"knowledge_points":["知识点1"],"quotes":["金句1"],"actions":["行动1"]}}
+视频标题：{title}
+内容：
+{context}
+"""
+    try:
+        raw = ai_service.chat(prompt)
+        payload = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip())
+        return {
+            "summary": str(payload.get("summary") or "").strip()[:300],
+            "core_points": [str(item).strip() for item in payload.get("core_points", []) if str(item).strip()][:12],
+            "knowledge_points": [str(item).strip() for item in payload.get("knowledge_points", []) if str(item).strip()][:12],
+            "quotes": [str(item).strip() for item in payload.get("quotes", []) if str(item).strip()][:8],
+            "actions": [str(item).strip() for item in payload.get("actions", []) if str(item).strip()][:8],
+        }
+    except (ai_service.AiError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("笔记 AI 生成失败，使用摘要兜底：%s", exc)
+        return {"summary": context[:200] or title, "core_points": [context[:500]] if context else [title], "knowledge_points": [], "quotes": [], "actions": []}
+
+
+def _prepare_note(video: BilibiliVideo, creator_name: str) -> tuple[dict[str, Any], str]:
+    """按字幕、分P、元数据三级策略准备笔记。"""
+    cid = video.cid
+    pages: list[dict[str, Any]] = []
+    if not cid:
+        try:
+            detail = fetch_video_detail(video.bvid, {"cid": video.cid, "pages": []})
+            cid = detail.get("cid")
+            pages = detail.get("pages") or []
+            if cid:
+                video.cid = cid
+        except BilibiliRateLimited as exc:
+            logger.warning("获取视频详情限流，继续使用元数据：%s", exc)
+        except BilibiliError:
+            pass
+    subtitle = fetch_video_subtitle(video.bvid, cid)
+    if not subtitle and not pages:
+        try:
+            detail = fetch_video_detail(video.bvid, {"cid": cid, "pages": []})
+            cid = detail.get("cid") or cid
+            pages = detail.get("pages") or []
+            if cid:
+                video.cid = cid
+        except BilibiliRateLimited as exc:
+            logger.warning("获取视频分P信息限流，继续使用元数据：%s", exc)
+        except BilibiliError:
+            pass
+    if subtitle:
+        chunks = _split_subtitle(subtitle)
+        if len(chunks) == 1:
+            note = _ai_note_from_context(video.title, chunks[0])
+        else:
+            notes = [_ai_note_from_context(video.title, chunk) for chunk in chunks]
+            note = {
+                "summary": notes[0].get("summary", ""),
+                "core_points": [item for chunk in notes for item in chunk.get("core_points", [])],
+                "knowledge_points": [item for chunk in notes for item in chunk.get("knowledge_points", [])],
+                "quotes": [item for chunk in notes for item in chunk.get("quotes", [])],
+                "actions": [item for chunk in notes for item in chunk.get("actions", [])],
+            }
+        return note, "subtitle"
+    if pages:
+        context = "\n".join(f"第{index + 1}P：{item.get('part') or '未命名'}\n{item.get('desc') or ''}" for index, item in enumerate(pages))
+        return _ai_note_from_context(f"{video.title}（分P）", context), "part_list"
+    content = (video.description or "").strip()
+    return {"summary": content[:200] or video.title, "core_points": [content[:500]] if content else [video.title], "knowledge_points": [], "quotes": [], "actions": []}, "metadata"
+
+
+def export_video(session: Session, video_id: int, confirm_simplified: bool = False) -> tuple[BilibiliVideo | None, Path | None, str]:
+    """预检并导出 YouTube/Obsidian 风格 Markdown；无字幕需确认后才写文件。"""
     video = get_video(session, video_id)
+    if not video.is_valid:
+        raise BilibiliError("视频已失效，无法生成笔记")
     creator = session.scalar(select(BilibiliCreator).where(BilibiliCreator.uid == video.uid))
     creator_name = creator.name if creator else f"UP主{video.uid}"
-    note = _ai_summary(video, creator_name)
+    note, note_source = _prepare_note(video, creator_name)
+    if note_source != "subtitle" and not confirm_simplified:
+        return None, None, note_source
     publish = video.publish_time.strftime("%Y-%m-%d") if video.publish_time else date.today().isoformat()
     base_title = sanitize_filename((video.title or "无标题")[:30]) or "无标题"
     safe_up = sanitize_filename(creator_name) or f"UP主{video.uid}"
-    file_name = f"{publish}_【{safe_up}】{base_title}.md"
     config.ensure_dirs()
-    output_path = config.OBSIDIAN_NOTES_DIR / file_name
+    output_path = config.OBSIDIAN_NOTES_DIR / f"{publish}_【{safe_up}】{base_title}.md"
+    def lines_for(items: list[str], fallback: str = "- 暂无") -> str:
+        return "\n".join(f"- {item}" for item in items) or fallback
 
-    core_points = "\n".join(f"- {item}" for item in note["core_points"]) or "- 暂无"
-    knowledge_points = "\n".join(f"- {item}" for item in note["knowledge_points"]) or "- 暂无"
-    feedback_text = video.user_feedback if video.user_feedback != "待确认" else "（用户手动写，预留位置）"
+    warning = ""
+    if note_source == "part_list":
+        warning = "> ⚠️ 本笔记基于视频分P标题生成，未获取完整字幕。\n\n"
+    elif note_source == "metadata":
+        warning = "> ⚠️ 未获取到视频字幕，本笔记仅基于标题和简介生成，内容较简略。\n\n"
     lines = [
-        "---",
-        f"date: {publish}",
-        "source: bilibili",
-        f'up: "{_yaml_text(creator_name)}"',
-        f"bvid: {video.bvid}",
-        f"url: {BILIBILI_VIDEO}/{video.bvid}/",
-        f"publish_time: {publish}",
-        f"play: {video.play}",
-        f"like: {video.like}",
-        f"ai_score: {video.ai_score if video.ai_score is not None else ''}",
-        f'ai_decision: "{_yaml_text(video.ai_decision)}"',
-        f'category: "{_yaml_text(video.category)}"',
-        "---",
-        "",
-        f"# {video.title}",
-        "",
-        "## 一句话概括",
-        note["summary"],
-        "",
-        "## 核心内容",
-        core_points,
-        "",
-        "## 关键知识点",
-        knowledge_points,
-        "",
-        "## 视频数据",
-        f"- 播放量：{video.play}",
-        f"- 点赞：{video.like}",
-        f"- 评论：{video.comment}",
-        f"- 转发：{video.share}",
-        f"- 爆款标签：{video.popularity_tag}（{video.popularity_reason}）",
-        "",
-        "## 我的反馈",
-        feedback_text,
-        "",
+        "---", f"date: {publish}", "source: bilibili", f'up: "{_yaml_text(creator_name)}"',
+        f"bvid: {video.bvid}", f"url: {BILIBILI_VIDEO}/{video.bvid}/", f"publish_time: {publish}",
+        f"play: {video.play}", f"like: {video.like}", f"ai_score: {video.ai_score if video.ai_score is not None else ''}",
+        f'ai_decision: "{_yaml_text(video.ai_decision)}"', f'category: "{_yaml_text(video.category)}"',
+        f"note_source: {note_source}", "---", "", f"# {video.title}", "", warning,
+        "## 一句话概括", note.get("summary", ""), "", "## 核心内容", lines_for(note.get("core_points", [])),
+        "", "## 关键知识点", lines_for(note.get("knowledge_points", [])), "", "## 金句", lines_for(note.get("quotes", [])),
+        "", "## 行动清单", lines_for(note.get("actions", [])), "", "## 视频数据", f"- 播放量：{video.play}",
+        f"- 点赞：{video.like}", f"- 评论：{video.comment}", f"- 转发：{video.share}",
+        f"- 爆款标签：{video.popularity_tag}（{video.popularity_reason}）", "", "## 我的反馈",
+        video.user_feedback if video.user_feedback != "待确认" else "（用户手动写，预留位置）", "",
     ]
     output_path.write_text("\n".join(lines), encoding="utf-8")
-    video.note_exported = True
-    video.exported_path = str(output_path)
+    video.note_exported, video.exported_path = True, str(output_path)
     session.commit()
     session.refresh(video)
-    return video, output_path
+    return video, output_path, note_source
 
 
-def export_videos(session: Session, video_ids: list[int]) -> dict[str, Any]:
-    """批量导出视频，返回成功和失败明细。"""
+def export_videos(session: Session, video_ids: list[int], confirm_simplified: bool = False) -> dict[str, Any]:
+    """批量导出；存在无字幕视频时先返回预检确认，不写文件。"""
     ids = list(dict.fromkeys(int(item) for item in video_ids))
     if not ids:
         raise BilibiliError("请选择要导出的视频")
+    if not confirm_simplified:
+        pending = []
+        for video_id in ids:
+            video = get_video(session, video_id)
+            if not video.is_valid:
+                pending.append({"id": video.id, "note_source": "invalid"})
+                continue
+            creator = session.scalar(select(BilibiliCreator).where(BilibiliCreator.uid == video.uid))
+            note_source = _prepare_note(video, creator.name if creator else f"UP主{video.uid}")[1]
+            if note_source != "subtitle":
+                pending.append({"id": video.id, "title": video.title, "note_source": note_source})
+        if pending:
+            return {"exported": [], "failed": [], "needs_confirmation": True, "pending": pending}
     exported: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     for video_id in ids:
         try:
-            video, path = export_video(session, video_id)
-            exported.append({"id": video.id, "title": video.title, "path": str(path)})
+            video, path, note_source = export_video(session, video_id, confirm_simplified=confirm_simplified)
+            if video is None or path is None:
+                failed.append({"id": video_id, "error": f"需要确认简化笔记：{note_source}"})
+            else:
+                exported.append({"id": video.id, "title": video.title, "path": str(path), "note_source": note_source})
         except BilibiliError as exc:
             failed.append({"id": video_id, "error": str(exc)})
         except OSError as exc:
-            logger.exception("视频笔记文件写入失败")
             failed.append({"id": video_id, "error": f"文件写入失败：{exc}"})
-    return {"exported": exported, "failed": failed}
+    return {"exported": exported, "failed": failed, "needs_confirmation": False}

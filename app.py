@@ -1327,6 +1327,13 @@ class VideoBatchExportRequest(BaseModel):
     """视频批量导出请求体。"""
 
     video_ids: list[int] = []
+    confirm_simplified: bool = False
+
+
+class VideoExportRequest(BaseModel):
+    """单视频导出请求体。"""
+
+    confirm_simplified: bool = False
 
 
 @app.get("/api/creators")
@@ -1376,10 +1383,11 @@ def get_bilibili_videos(
     category: str = Query(default=""),
     decision: str = Query(default=""),
     creator_uid: str = Query(default=""),
+    include_invalid: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    """返回视频列表，支持分类、AI 决策和 UP 主筛选。"""
-    items = bilibili_service.list_videos(db, category=category, decision=decision, creator_uid=creator_uid)
+    """返回视频列表，支持分类、AI 决策、UP 主和失效状态筛选。"""
+    items = bilibili_service.list_videos(db, category=category, decision=decision, creator_uid=creator_uid, include_invalid=include_invalid)
     return ok([bilibili_service.serialize_video(item) for item in items])
 
 
@@ -1395,21 +1403,23 @@ def post_video_feedback(video_id: int, payload: VideoFeedbackRequest, db: Sessio
 
 @app.post("/api/videos/export-batch")
 def export_video_batch(payload: VideoBatchExportRequest, db: Session = Depends(get_db)):
-    """批量导出视频为 Obsidian Markdown。"""
+    """批量导出视频为 Obsidian Markdown；无字幕时先返回确认。"""
     try:
-        result = bilibili_service.export_videos(db, payload.video_ids)
+        result = bilibili_service.export_videos(db, payload.video_ids, confirm_simplified=payload.confirm_simplified)
     except bilibili_service.BilibiliError as exc:
         return fail(str(exc))
     return ok(result, message=f"已导出 {len(result.get('exported', []))} 条")
 
 
 @app.post("/api/videos/{video_id}/export")
-def export_video_note(video_id: int, db: Session = Depends(get_db)):
-    """生成或覆盖单条视频的 Obsidian Markdown。"""
+def export_video_note(video_id: int, payload: VideoExportRequest | None = None, db: Session = Depends(get_db)):
+    """预检或生成单条视频的 Obsidian Markdown。"""
     try:
-        video, path = bilibili_service.export_video(db, video_id)
+        video, path, note_source = bilibili_service.export_video(db, video_id, confirm_simplified=payload.confirm_simplified if payload else False)
     except bilibili_service.BilibiliError as exc:
         return fail(str(exc))
     except OSError as exc:
         return fail(f"文件写入失败：{exc}")
-    return ok({"video": bilibili_service.serialize_video(video), "path": str(path)}, message="笔记已导出到 Obsidian")
+    if video is None or path is None:
+        return ok({"needs_confirmation": True, "note_source": note_source}, message="该视频没有字幕，导出的笔记会比较简略，是否继续？")
+    return ok({"video": bilibili_service.serialize_video(video), "path": str(path), "note_source": note_source, "needs_confirmation": False}, message="笔记已导出到 Obsidian")

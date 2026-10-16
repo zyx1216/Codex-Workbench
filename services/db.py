@@ -324,6 +324,23 @@ def _rebuild_pending_items_if_needed() -> None:
         ))
 
 
+def _ensure_bilibili_video_columns() -> None:
+    """给旧库补充 B站视频有效性字段；幂等执行。"""
+    inspector = inspect(engine)
+    if "bilibili_videos" not in set(inspector.get_table_names()):
+        return
+    existing = {column["name"] for column in inspector.get_columns("bilibili_videos")}
+    with engine.begin() as connection:
+        if "cid" not in existing:
+            connection.execute(text("ALTER TABLE bilibili_videos ADD COLUMN cid INTEGER"))
+        if "is_valid" not in existing:
+            connection.execute(text("ALTER TABLE bilibili_videos ADD COLUMN is_valid BOOLEAN NOT NULL DEFAULT 1"))
+        if "invalid_reason" not in existing:
+            connection.execute(text("ALTER TABLE bilibili_videos ADD COLUMN invalid_reason VARCHAR(200) NOT NULL DEFAULT ''"))
+        if "last_validated_at" not in existing:
+            connection.execute(text("ALTER TABLE bilibili_videos ADD COLUMN last_validated_at DATETIME"))
+
+
 def init_db() -> None:
     """创建数据目录和所有数据表（幂等）。"""
     config.ensure_dirs()
@@ -335,6 +352,7 @@ def init_db() -> None:
     _rebuild_async_tasks_if_needed()
     _ensure_rss_columns()
     _rebuild_pending_items_if_needed()
+    _ensure_bilibili_video_columns()
 
 
 def get_db():

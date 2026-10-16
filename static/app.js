@@ -4949,6 +4949,7 @@ async function loadBilibiliVideos() {
     const decision = $("#video-filter-decision").value;
     if (category) params.set("category", category);
     if (decision) params.set("decision", decision);
+    if ($("#video-show-invalid")?.checked) params.set("include_invalid", "true");
     const res = await fetchJson(`/api/videos${params.toString() ? `?${params}` : ""}`);
     creatorVideos = res.data || [];
     selectedBilibiliVideoIds.clear();
@@ -4968,11 +4969,12 @@ async function loadBilibiliVideos() {
 
 function buildBilibiliVideoCard(video) {
   const card = document.createElement("div");
-  card.className = "card glass video-card";
+  card.className = `card glass video-card${video.is_valid ? "" : " video-invalid"}`;
   card.dataset.videoId = video.id;
   const check = document.createElement("input");
   check.type = "checkbox";
   check.className = "bilibili-video-check";
+  if (!video.is_valid) check.disabled = true;
   check.addEventListener("change", () => {
     if (check.checked) selectedBilibiliVideoIds.add(video.id);
     else selectedBilibiliVideoIds.delete(video.id);
@@ -4992,7 +4994,7 @@ function buildBilibiliVideoCard(video) {
   title.href = video.url;
   title.target = "_blank";
   title.rel = "noopener noreferrer";
-  title.textContent = `${video.popularity_tag === "爆款" ? "🔥 " : ""}${video.title || "无标题"}`;
+  title.textContent = `${video.is_valid ? "" : "⛔ 已失效 · "}${video.popularity_tag === "爆款" ? "🔥 " : ""}${video.title || "无标题"}`;
   title.title = video.popularity_reason || "";
   const meta = document.createElement("div");
   meta.className = "video-meta";
@@ -5016,7 +5018,8 @@ function buildBilibiliVideoCard(video) {
     actions.appendChild(btn);
   });
   const exportBtn = makeButton("btn btn-primary btn-sm", video.note_exported ? "✅ 重新导出" : "生成笔记");
-  exportBtn.addEventListener("click", () => exportBilibiliVideo(video.id));
+  if (!video.is_valid) { exportBtn.disabled = true; exportBtn.title = video.invalid_reason || "视频已失效"; }
+  else exportBtn.addEventListener("click", () => exportBilibiliVideo(video.id));
   actions.appendChild(exportBtn);
   body.append(title, meta, aiRow, reason, actions);
   card.append(check, cover, body);
@@ -5140,36 +5143,32 @@ async function saveBilibiliFeedback(videoId, feedback) {
   }
 }
 
-async function exportBilibiliVideo(videoId) {
+async function exportBilibiliVideo(videoId, confirmed = false) {
   try {
-    const res = await fetchJson(`/api/videos/${videoId}/export`, {method: "POST"});
-    toast(res.message || "笔记已导出", "success");
+    const res = await fetchJson(`/api/videos/${videoId}/export`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirm_simplified: confirmed})});
+    if (res.data?.needs_confirmation) {
+      if (confirm("该视频没有字幕，导出的笔记会比较简略，是否继续？")) return exportBilibiliVideo(videoId, true);
+      return;
+    }
+    toast(`${res.message || "笔记已导出"}（${res.data?.note_source || ""}）`, "success");
     await loadBilibiliVideos();
-  } catch (err) {
-    toast(err.message || "导出失败", "error");
-  }
+  } catch (err) { toast(err.message || "导出失败", "error"); }
 }
 
-async function exportSelectedBilibiliVideos() {
-  if (!selectedBilibiliVideoIds.size) {
-    toast("请先勾选要导出的视频", "warning");
-    return;
-  }
+async function exportSelectedBilibiliVideos(confirmed = false) {
+  if (!selectedBilibiliVideoIds.size) { toast("请先勾选要导出的视频", "warning"); return; }
   const btn = $("#btn-batch-export-videos");
-  btn.disabled = true;
-  btn.textContent = "导出中…";
+  const oldText = btn.textContent;
+  btn.disabled = true; btn.textContent = "导出中…";
   try {
-    const res = await fetchJson("/api/videos/export-batch", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({video_ids: Array.from(selectedBilibiliVideoIds)}),
-    });
+    const res = await fetchJson("/api/videos/export-batch", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({video_ids: Array.from(selectedBilibiliVideoIds), confirm_simplified: confirmed})});
+    if (res.data?.needs_confirmation) {
+      const count = res.data.pending?.length || 0;
+      if (confirm(`有 ${count} 条视频没有字幕，导出的笔记会比较简略，是否继续？`)) return exportSelectedBilibiliVideos(true);
+      return;
+    }
     toast(res.message || "批量导出完成", "success");
     await loadBilibiliVideos();
-  } catch (err) {
-    toast(err.message || "批量导出失败", "error");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "批量导出选中";
-  }
+  } catch (err) { toast(err.message || "批量导出失败", "error"); }
+  finally { btn.disabled = false; btn.textContent = oldText; }
 }

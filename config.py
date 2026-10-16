@@ -20,7 +20,7 @@ SCHEDULER_CONFIG_PATH = DATA_DIR / "scheduler_config.json"
 OBSIDIAN_NOTES_DIR = BASE_DIR / "obsidian_notes"
 
 APP_NAME = "个人工作台"
-APP_VERSION = "3.0.3"
+APP_VERSION = "3.0.4"
 
 
 def ensure_dirs() -> None:
