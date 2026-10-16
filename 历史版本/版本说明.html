@@ -847,6 +847,11 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td class="ver">个人工作台 v3.0.1</td>
+        <td class="time">2026-10-16 13:19</td>
+        <td><span class="tag">B站WBI</span><span class="tag">限流修复</span><b>B站 WBI 签名修复</b>：<ul><li>实现 WBI mixin_key、wts、w_rid 完整签名流程，支持未知账号 nav 返回。</li><li>所有 B站请求串行限速 2 秒，412/风控后进入 1 小时冷却。</li><li>WBI -352 自动刷新密钥并重试一次，仍失败时降级 HTML。</li><li>补充结构化请求日志、空视频处理和前端限流提示。</li></ul></td>
+      </tr>
     </tbody>
   </table>
 
