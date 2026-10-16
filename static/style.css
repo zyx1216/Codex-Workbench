@@ -3386,7 +3386,7 @@ kbd {
 
 .creator-card {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
@@ -3488,4 +3488,11 @@ kbd {
   .creator-filter-bar { grid-template-columns: 1fr; }
   .video-card { grid-template-columns: auto 110px 1fr; }
   .video-cover { width: 110px; height: 68px; }
+}
+
+.creator-check { margin: 0; }
+.creator-card-actions { display: flex; gap: 7px; align-items: center; }
+@media (max-width: 760px) {
+  .creator-card { grid-template-columns: auto auto 1fr; }
+  .creator-card-actions { grid-column: 3; }
 }

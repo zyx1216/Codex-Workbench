@@ -1899,6 +1899,8 @@ function bindFeedPage() {
   });
   $("#btn-add-creator").addEventListener("click", addBilibiliCreator);
   $("#btn-refresh-creators").addEventListener("click", refreshBilibiliCreators);
+  $("#creator-select-all").addEventListener("change", toggleAllCreators);
+  $("#btn-refresh-selected-creators").addEventListener("click", refreshSelectedBilibiliCreators);
   $("#video-filter-category").addEventListener("input", () => {
     if (creatorFilterTimer) clearTimeout(creatorFilterTimer);
     creatorFilterTimer = setTimeout(loadBilibiliVideos, 250);
@@ -4875,28 +4877,62 @@ async function loadBilibiliCreators() {
   }
 }
 
+let selectedCreatorIds = new Set();
+
+function syncCreatorSelection() {
+  const checks = $$(".creator-check");
+  $("#creator-select-all").checked = checks.length > 0 && selectedCreatorIds.size === checks.length;
+  $("#btn-refresh-selected-creators").disabled = selectedCreatorIds.size === 0;
+  $("#btn-refresh-selected-creators").textContent = `刷新选中(${selectedCreatorIds.size})`;
+}
+
+function toggleAllCreators(event) {
+  selectedCreatorIds.clear();
+  $$(".creator-check").forEach((check) => {
+    check.checked = event.target.checked;
+    if (event.target.checked) selectedCreatorIds.add(Number(check.closest(".creator-card").dataset.creatorId));
+  });
+  syncCreatorSelection();
+}
+
 function buildBilibiliCreatorCard(creator) {
   const card = document.createElement("div");
   card.className = "card glass creator-card";
+  card.dataset.creatorId = creator.id;
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "creator-check";
+  check.addEventListener("change", () => {
+    if (check.checked) selectedCreatorIds.add(creator.id);
+    else selectedCreatorIds.delete(creator.id);
+    syncCreatorSelection();
+  });
   const img = document.createElement("img");
   img.className = "creator-avatar";
   img.alt = "头像";
   img.src = creator.face || "";
   const main = document.createElement("div");
   main.className = "creator-card-main";
-  main.innerHTML = `<div class="feed-item-title">${escapeHtml(creator.name || `UP主${creator.uid}`)}</div><div class="feed-item-url">UID：${escapeHtml(creator.uid)}</div><div class="feed-item-meta"><span>最后检查：${creator.last_check_at ? formatTime(creator.last_check_at) : "未检查"}</span></div>`;
+  main.innerHTML = `<div class="feed-item-title">${escapeHtml(creator.name || `UP主${creator.uid}`)}</div><div class="feed-item-url">UID：${escapeHtml(creator.uid)}</div><div class="feed-item-meta"><span>视频数：${creator.video_count ?? 0}</span><span>上次更新：${creator.last_check_at ? formatTime(creator.last_check_at) : "未检查"}</span></div>`;
+  const actions = document.createElement("div");
+  actions.className = "creator-card-actions";
+  const refresh = makeButton("btn btn-primary btn-sm", "刷新");
+  refresh.addEventListener("click", () => refreshOneBilibiliCreator(creator.id, refresh));
   const remove = makeButton("btn btn-danger btn-sm", "取消跟踪");
   remove.addEventListener("click", async () => {
     if (!confirm(`确定取消跟踪「${creator.name || creator.uid}」吗？已入库视频会保留。`)) return;
     try {
       await fetchJson(`/api/creators/${creator.id}`, { method: "DELETE" });
+      selectedCreatorIds.delete(creator.id);
       toast("已取消跟踪", "success");
       await loadCreatorDashboard();
     } catch (err) { toast(err.message || "删除失败", "error"); }
   });
-  card.append(img, main, remove);
+  actions.append(refresh, remove);
+  card.append(check, img, main, actions);
   return card;
 }
+
 
 function formatBilibiliCount(value) {
   const number = Number(value || 0);
@@ -5026,28 +5062,67 @@ async function addBilibiliCreator() {
   }
 }
 
-async function refreshBilibiliCreators() {
-  const btn = $("#btn-refresh-creators");
-  btn.disabled = true;
-  btn.textContent = "刷新中…";
+async function refreshOneBilibiliCreator(creatorId, button) {
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = "检查中...";
   try {
-    const res = await fetchJson("/api/creators/refresh", {method: "POST"});
-    const data = res.data || {};
-    if (data.rate_limited) {
-      toast("B站接口暂时限流，稍后再试", "warning");
-    } else if (data.failed) {
-      const first = data.results?.find((item) => item.result?.error)?.result?.error || "部分 UP 主刷新失败";
-      toast(`刷新完成，新增 ${data.total_added || 0} 条；${first}`, "warning");
-    } else {
-      toast(`刷新完成，新增 ${data.total_added || 0} 条视频`, "success");
-    }
+    const res = await fetchJson("/api/creators/refresh", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids: [creatorId]}),
+    });
+    handleCreatorRefreshResult(res.data || {});
     await loadCreatorDashboard();
   } catch (err) {
     toast(err.message || "刷新失败", "error");
   } finally {
-    btn.disabled = false;
-    btn.textContent = "立即刷新";
+    button.disabled = false;
+    button.textContent = oldText;
   }
+}
+
+function handleCreatorRefreshResult(data) {
+  if (data.rate_limited) {
+    const seconds = Number(data.retry_after_seconds || 0);
+    const wait = seconds > 0 ? (seconds < 60 ? "不到 1 分钟" : `${Math.ceil(seconds / 60)} 分钟`) : "稍后";
+    toast(`B站接口限流中，预计 ${wait}后自动恢复`, "warning");
+  } else if (data.failed) {
+    const first = data.results?.find((item) => item.result?.error)?.result?.error || "部分 UP 主刷新失败";
+    toast(`刷新完成，新增 ${data.total_added || 0} 条；${first}`, "warning");
+  } else {
+    toast(`刷新完成，新增 ${data.total_added || 0} 条视频`, "success");
+  }
+}
+
+async function refreshBilibiliCreators(ids = null) {
+  const button = ids ? $("#btn-refresh-selected-creators") : $("#btn-refresh-creators");
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = ids ? "刷新中..." : "刷新中…";
+  try {
+    const res = await fetchJson("/api/creators/refresh", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(ids ? {ids} : {}),
+    });
+    handleCreatorRefreshResult(res.data || {});
+    await loadCreatorDashboard();
+  } catch (err) {
+    toast(err.message || "刷新失败", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = oldText;
+  }
+}
+
+async function refreshSelectedBilibiliCreators() {
+  const ids = Array.from(selectedCreatorIds);
+  if (!ids.length) {
+    toast("请先勾选要刷新的 UP 主", "warning");
+    return;
+  }
+  await refreshBilibiliCreators(ids);
 }
 
 async function saveBilibiliFeedback(videoId, feedback) {

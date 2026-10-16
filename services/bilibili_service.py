@@ -9,6 +9,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ WBI_MIXIN_KEY_ENC_TAB = [
     22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ]
 
+_refresh_lock = threading.Lock()
 _request_lock = threading.Lock()
 _last_request_at = 0.0
 _rate_limited_until = 0.0
@@ -385,7 +387,10 @@ def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
         return fallback
 
 
-def serialize_creator(creator: BilibiliCreator) -> dict[str, Any]:
+def serialize_creator(creator: BilibiliCreator, session: Session | None = None) -> dict[str, Any]:
+    video_count = 0
+    if session is not None:
+        video_count = int(session.scalar(select(func.count()).select_from(BilibiliVideo).where(BilibiliVideo.uid == creator.uid)) or 0)
     return {
         "id": creator.id,
         "uid": creator.uid,
@@ -394,6 +399,7 @@ def serialize_creator(creator: BilibiliCreator) -> dict[str, Any]:
         "added_at": creator.added_at.isoformat() if creator.added_at else None,
         "last_check_at": creator.last_check_at.isoformat() if creator.last_check_at else None,
         "enabled": bool(creator.enabled),
+        "video_count": video_count,
     }
 
 
@@ -646,25 +652,55 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
     return {"added": added, "updated": updated, "error": "；".join(errors), "rate_limited": False}
 
 
+def _refresh_creator_by_id(creator_id: int) -> dict[str, Any]:
+    """在线程内使用独立 Session 刷新单个 UP 主。"""
+    from services.db import SessionLocal
+
+    with SessionLocal() as session:
+        creator = session.get(BilibiliCreator, creator_id)
+        if creator is None:
+            return {"creator_id": creator_id, "creator": None, "result": {"added": 0, "updated": 0, "error": "UP主不存在", "rate_limited": False}}
+        result = refresh_creator(session, creator)
+        return {"creator_id": creator_id, "creator": serialize_creator(creator, session), "result": result}
+
+
+def refresh_creators(session: Session, ids: list[int] | None = None) -> dict[str, Any]:
+    """刷新全部或指定 UP 主；全量最多 2 并发，指定 ID 严格串行。"""
+    if not _refresh_lock.acquire(blocking=False):
+        raise BilibiliError("已有刷新任务正在执行")
+
+    try:
+        selected_ids = [int(item) for item in (ids or []) if int(item) > 0]
+        if selected_ids:
+            selected_ids = list(dict.fromkeys(selected_ids))
+            results: list[dict[str, Any]] = []
+            for index, creator_id in enumerate(selected_ids):
+                if index:
+                    time.sleep(1.0)
+                results.append(_refresh_creator_by_id(creator_id))
+        else:
+            creator_ids = list(session.scalars(select(BilibiliCreator.id).where(BilibiliCreator.enabled == True)).all())  # noqa: E712
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="bili-refresh") as pool:
+                results = list(pool.map(_refresh_creator_by_id, creator_ids))
+
+        total_added = sum(int(item.get("result", {}).get("added", 0)) for item in results)
+        failed = sum(1 for item in results if item.get("result", {}).get("error"))
+        rate_limited = any(bool(item.get("result", {}).get("rate_limited")) for item in results)
+        retry_after = 0
+        return {
+            "results": results,
+            "total_added": total_added,
+            "failed": failed,
+            "rate_limited": rate_limited,
+            "retry_after_seconds": retry_after,
+        }
+    finally:
+        _refresh_lock.release()
+
+
 def refresh_all(session: Session) -> dict[str, Any]:
-    """刷新全部启用 UP 主，返回汇总统计。"""
-    creators = list(session.scalars(select(BilibiliCreator).where(BilibiliCreator.enabled == True)).all())  # noqa: E712
-    results: list[dict[str, Any]] = []
-    total_added = 0
-    failed = 0
-    rate_limited = False
-    for creator in creators:
-        try:
-            result = refresh_creator(session, creator)
-        except Exception as exc:  # noqa: BLE001 - 单个 UP 主异常不阻断其他 UP 主
-            logger.exception("刷新UP主失败 uid=%s", creator.uid)
-            result = {"added": 0, "updated": 0, "error": str(exc), "rate_limited": False}
-        total_added += int(result.get("added", 0))
-        rate_limited = rate_limited or bool(result.get("rate_limited"))
-        if result.get("error"):
-            failed += 1
-        results.append({"creator": serialize_creator(creator), "result": result})
-    return {"results": results, "total_added": total_added, "failed": failed, "rate_limited": rate_limited}
+    """兼容旧入口：刷新全部 UP 主。"""
+    return refresh_creators(session)
 
 
 def list_videos(session: Session, category: str = "", decision: str = "", creator_uid: str = "") -> list[BilibiliVideo]:

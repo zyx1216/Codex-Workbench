@@ -22,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v3.0.1</div>
+    <div class="sidebar-version">v3.0.2</div>
   </aside>
 
   <main class="main">
@@ -176,6 +176,8 @@
 
         <div class="card glass creator-toolbar">
           <input type="text" id="creator-input" class="input" placeholder="粘贴 UID 或 https://space.bilibili.com/123456" />
+          <label class="check-field"><input type="checkbox" id="creator-select-all" /><span>全选 UP 主</span></label>
+          <button class="btn btn-ghost" id="btn-refresh-selected-creators" type="button" disabled>刷新选中(0)</button>
           <button class="btn btn-primary" id="btn-add-creator" type="button">添加 UP 主</button>
           <button class="btn btn-ghost" id="btn-refresh-creators" type="button">立即刷新</button>
         </div>

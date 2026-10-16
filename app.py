@@ -1317,6 +1317,12 @@ class VideoFeedbackRequest(BaseModel):
     feedback: str
 
 
+class CreatorRefreshRequest(BaseModel):
+    """UP 主刷新请求体；ids 为空表示刷新全部。"""
+
+    ids: list[int] = []
+
+
 class VideoBatchExportRequest(BaseModel):
     """视频批量导出请求体。"""
 
@@ -1350,9 +1356,13 @@ def delete_creator(creator_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/creators/refresh")
-def refresh_creators(db: Session = Depends(get_db)):
-    """手动刷新全部启用的 UP 主。"""
-    return ok(bilibili_service.refresh_all(db), message="刷新完成")
+def refresh_creators(payload: CreatorRefreshRequest | None = None, db: Session = Depends(get_db)):
+    """刷新全部或指定 UP 主；ids 为空表示刷新全部。"""
+    try:
+        result = bilibili_service.refresh_creators(db, payload.ids if payload else None)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok(result, message="刷新完成")
 
 
 @app.get("/api/videos/stats")
