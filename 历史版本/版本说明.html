@@ -857,6 +857,7 @@
       <tr><td class="ver">个人工作台 v3.0.4</td><td class="time">2026-10-16 14:38</td><td><span class="tag">失效过滤</span><span class="tag">字幕笔记</span><b>失效视频过滤与笔记质量提升</b>：<ul><li>新增视频有效性字段和 24 小时复检，失效视频默认隐藏且不参与 AI/统计。</li><li>新增字幕优先、分P章节、元数据简版三级笔记生成。</li><li>无字幕导出增加确认，Markdown 增加 note_source 和简略提示。</li></ul></td></tr>
       <tr><td class="ver">个人工作台 v3.0.5</td><td class="time">2026-10-16 14:54</td><td><span class="tag">失效判定</span><span class="tag">存量校验</span><b>失效视频判定修正</b>：<ul><li>补充 code、status、标题占位、message/errid 的失效判定。</li><li>首次启动自动补验证存量有效视频，412 时安全中止并下轮继续。</li><li>增加手动“校验失效视频”入口，前端显示删除/私密原因。</li></ul></td></tr>
       <tr><td class="ver">个人工作台 v3.1.0</td><td class="time">2026-10-21 11:08</td><td><span class="tag">RSSHub</span><span class="tag">架构调整</span><b>B站跟踪改用 RSSHub</b>：<ul><li>删除 WBI 签名、密钥缓存和旧视频列表接口链路。</li><li>主实例失败依次尝试三个 RSSHub 备选实例，10 秒超时。</li><li>保留 B站详情补全、字幕、失效验证、AI 筛选、反馈、爆款分析和 Obsidian 导出。</li></ul></td></tr>
+      <tr><td class="ver">个人工作台 v3.1.1</td><td class="time">2026-10-21 11:15</td><td><span class="tag">RSSHub</span><span class="tag">自定义实例</span><b>RSSHub 实例扩充</b>：<ul><li>默认实例扩充为 6 个，按顺序回退，每个超时 15 秒。</li><li>设置页新增自定义 RSSHub 实例，优先尝试用户本地实例。</li><li>新增 RSSHub 配置 API，非法地址返回中文错误。</li></ul></td></tr>
     </tbody>
   </table>
 
