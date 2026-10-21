@@ -5236,18 +5236,35 @@ function bindTrendsPage() {
   }));
 }
 
+function extractTrendItems(response) {
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response)) return response;
+  return [];
+}
+
 async function loadTrends() {
   const box = $("#trends-list");
+  if (!box) return;
   try {
     const params = new URLSearchParams();
     if (trendPlatform) params.set("platform", trendPlatform);
     if (trendQuality) params.set("quality", trendQuality);
     const [itemsRes, statsRes] = await Promise.all([fetchJson(`/api/trends?${params}`), fetchJson("/api/trends/stats")]);
-    const items = itemsRes.data || [];
+    const items = extractTrendItems(itemsRes);
     box.innerHTML = "";
-    if (!items.length) box.appendChild(makeFeedEmpty("🔥", "暂无热点，点击刷新抓取"));
-    items.forEach((item) => box.appendChild(buildTrendCard(item)));
-    const stats = statsRes.data || {};
+    if (!items.length) {
+      box.appendChild(makeFeedEmpty("🔥", "暂无热点，点刷新试试"));
+    } else {
+      items.forEach((item) => {
+        try {
+          box.appendChild(buildTrendCard(item));
+        } catch (err) {
+          console.error("热点卡片渲染失败", item, err);
+          box.appendChild(makeFeedEmpty("⚠️", item.title || "热点数据格式异常"));
+        }
+      });
+    }
+    const stats = statsRes?.data && !Array.isArray(statsRes.data) ? statsRes.data : {};
     $("#trends-stats").textContent = `今日抓取 ${stats.today_count || 0} 条 · 值得看 ${stats.worth_count || 0} 条 · 已反馈 ${stats.feedback_count || 0} 条`;
     const zhihuBtn = $('#trends-platform-filter [data-platform="zhihu"]');
     const zhihuStatus = stats.platform_status?.zhihu;
@@ -5260,14 +5277,18 @@ async function loadTrends() {
       zhihuBtn.disabled = false;
       zhihuBtn.classList.remove("unavailable");
     }
-  } catch (err) { box.innerHTML = ""; box.appendChild(makeFeedEmpty("⚠️", err.message || "热点加载失败")); }
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(makeFeedEmpty("⚠️", err.message || "热点加载失败"));
+  }
 }
 
 function buildTrendCard(item) {
   const card = document.createElement("div");
   card.className = "card glass trend-card";
-  const scoreClass = item.ai_score >= 70 ? "good" : (item.ai_score >= 40 ? "medium" : "bad");
-  card.innerHTML = `<div class="trend-head"><span>${escapeHtml(item.platform_name)}</span><span>热度 ${formatBilibiliCount(item.heat)}</span><span class="video-score ${scoreClass}">${item.ai_score}分</span>${item.note_id && !item.content_fetched ? '<span class="trend-fetch-warning">未抓原文</span>' : ''}</div><a class="trend-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="trend-reason">${escapeHtml(item.ai_reason || "暂无理由")} · ${escapeHtml(item.ai_category || "未分类")}</div>`;
+  const score = Number.isFinite(Number(item.ai_score)) ? Number(item.ai_score) : 50;
+  const scoreClass = score >= 70 ? "good" : (score >= 40 ? "medium" : "bad");
+  card.innerHTML = `<div class="trend-head"><span>${escapeHtml(item.platform_name)}</span><span>热度 ${formatBilibiliCount(item.heat)}</span><span class="video-score ${scoreClass}">${score}分</span><span class="video-decision">${escapeHtml(item.decision || "一般")}</span>${item.note_id && !item.content_fetched ? '<span class="trend-fetch-warning">未抓原文</span>' : ''}</div><a class="trend-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="trend-reason">${escapeHtml(item.ai_reason || "暂无理由")} · ${escapeHtml(item.ai_category || "未分类")}</div>`;
   const actions = document.createElement("div"); actions.className = "video-actions";
   [["值得看", "👍 值得看"], ["不值得看", "👎 不值得看"], ["待确认", "⏭️ 待确认"]].forEach(([value, label]) => {
     const btn = makeButton(`btn btn-ghost btn-sm ${item.user_feedback === value ? "active" : ""}`, label);
