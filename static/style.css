@@ -3511,3 +3511,5 @@ kbd {
 .trend-stats { margin-top:16px; padding:12px 16px; color:var(--text-dim); text-align:center; }
 
 .trend-fetch-warning { padding:2px 8px; border-radius:999px; color:var(--text-dim); background:rgba(148,163,184,.14); }
+
+.segmented-btn.unavailable, .segmented-btn:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(1); }

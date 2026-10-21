@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,8 @@ REQUEST_TIMEOUT = 10.0
 PLATFORM_INTERVAL = 2.0
 PLATFORMS = ("bilibili", "zhihu", "weibo")
 PLATFORM_NAMES = {"bilibili": "B站", "zhihu": "知乎", "weibo": "微博"}
+_platform_status = {name: {"available": None, "message": ""} for name in PLATFORMS}
+_ai_failure_reported = False
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
@@ -78,14 +81,29 @@ def _bilibili_items() -> list[dict[str, Any]]:
 
 
 def _zhihu_items() -> list[dict[str, Any]]:
-    payload = _get_json("https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total", "https://www.zhihu.com/hot", {"limit": 10})
-    result = []
-    for item in payload.get("data") or []:
-        target = item.get("target") or {}
-        title = str(target.get("title") or "").strip()
-        if not title:
+    """知乎热榜 API 需要登录，改用公开 billboard HTML 解析。"""
+    try:
+        response = httpx.get("https://www.zhihu.com/billboard", headers={**HEADERS, "Referer": "https://www.zhihu.com/hot"}, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        raise TrendError("知乎需要登录，暂不可用") from exc
+    soup = BeautifulSoup(response.text, "html.parser")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for link in soup.find_all("a", href=True):
+        href = str(link.get("href") or "")
+        if "/question/" not in href:
             continue
-        result.append({"platform": "zhihu", "title": title, "heat": parse_heat(item.get("detail_text")), "url": str(target.get("url") or f"https://www.zhihu.com/search?q={quote(title)}")})
+        title = link.get_text(" ", strip=True)
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        url = href if href.startswith("http") else f"https://www.zhihu.com{href}"
+        result.append({"platform": "zhihu", "title": title[:500], "heat": 0, "url": url})
+        if len(result) >= 10:
+            break
+    if not result:
+        raise TrendError("知乎需要登录，暂不可用")
     return result
 
 
@@ -101,22 +119,34 @@ def _weibo_items() -> list[dict[str, Any]]:
 
 
 def _apply_ai(trend: HotTrend) -> None:
-    prompt = f"""你是内容筛选助手。目标用户想学习AI、编程、个人成长和知识类内容。\n只输出 JSON，不要 Markdown：{{\"score\":0,\"reason\":\"不超过30字\",\"category\":\"分类\"}}\n平台：{PLATFORM_NAMES.get(trend.platform, trend.platform)}\n标题：{trend.title}\n热度：{trend.heat}\n"""
+    global _ai_failure_reported
+    prompt = f"""你是内容筛选助手。目标用户想学习AI、编程、个人成长和知识类内容。
+只输出 JSON，不要 Markdown：{{\"score\":0,\"reason\":\"不超过30字\",\"category\":\"分类\"}}
+平台：{PLATFORM_NAMES.get(trend.platform, trend.platform)}
+标题：{trend.title}
+热度：{trend.heat}
+"""
     try:
         raw = ai_service.chat(prompt)
         payload = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip())
         trend.ai_score = max(0, min(100, int(payload.get("score", 50))))
         trend.ai_reason = str(payload.get("reason") or "").strip()[:300]
         trend.ai_category = str(payload.get("category") or "未分类").strip()[:50] or "未分类"
-    except (ai_service.AiError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.warning("热点 AI 筛选失败：%s", exc)
+        _ai_failure_reported = False
+    except Exception as exc:  # noqa: BLE001 - AI 失败必须降级，不影响热点入库
+        if not _ai_failure_reported:
+            logger.warning("热点 AI 筛选失败，后续本轮静默降级：%s", exc)
+            _ai_failure_reported = True
+        message = str(exc)
         trend.ai_score = 50
-        trend.ai_reason = "AI 暂不可用"
+        trend.ai_reason = "AI未配置" if any(text in message for text in ("Base URL", "API Key", "模型名称")) else "AI 暂不可用"
         trend.ai_category = "未分类"
 
 
 def refresh_trends(session: Session) -> dict[str, Any]:
     """按平台抓取热榜；单平台失败跳过，不影响其他平台。"""
+    global _ai_failure_reported
+    _ai_failure_reported = False
     fetchers = {"bilibili": _bilibili_items, "zhihu": _zhihu_items, "weibo": _weibo_items}
     fetched_day = date.today().isoformat()
     results: list[dict[str, Any]] = []
@@ -127,7 +157,10 @@ def refresh_trends(session: Session) -> dict[str, Any]:
         try:
             items = fetchers[platform]()
         except TrendError as exc:
-            results.append({"platform": platform, "fetched": 0, "added": 0, "updated": 0, "error": str(exc)})
+            optional = platform == "zhihu"
+            message = "知乎需要登录，暂不可用" if optional else str(exc)
+            _platform_status[platform] = {"available": False, "message": message}
+            results.append({"platform": platform, "fetched": 0, "added": 0, "updated": 0, "error": message, "available": False, "optional": optional})
             continue
         added = updated = 0
         for item in items[:10]:
@@ -147,7 +180,8 @@ def refresh_trends(session: Session) -> dict[str, Any]:
         session.commit()
         total_added += added
         total_updated += updated
-        results.append({"platform": platform, "fetched": len(items[:10]), "added": added, "updated": updated, "error": ""})
+        _platform_status[platform] = {"available": True, "message": ""}
+        results.append({"platform": platform, "fetched": len(items[:10]), "added": added, "updated": updated, "error": "", "available": True, "optional": platform == "zhihu"})
     return {"results": results, "total_added": total_added, "total_updated": total_updated}
 
 
@@ -189,12 +223,13 @@ def set_feedback(session: Session, trend_id: int, feedback: str) -> HotTrend:
     return trend
 
 
-def get_stats(session: Session) -> dict[str, int]:
+def get_stats(session: Session) -> dict[str, Any]:
     today = date.today().isoformat()
     return {
         "today_count": int(session.scalar(select(func.count()).select_from(HotTrend).where(HotTrend.fetched_date == today)) or 0),
         "worth_count": int(session.scalar(select(func.count()).select_from(HotTrend).where(HotTrend.fetched_date == today, HotTrend.ai_score >= 70)) or 0),
         "feedback_count": int(session.scalar(select(func.count()).select_from(HotTrend).where(HotTrend.user_feedback != "待确认")) or 0),
+        "platform_status": {name: dict(status) for name, status in _platform_status.items()},
     }
 
 

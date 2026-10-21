@@ -5249,6 +5249,17 @@ async function loadTrends() {
     items.forEach((item) => box.appendChild(buildTrendCard(item)));
     const stats = statsRes.data || {};
     $("#trends-stats").textContent = `今日抓取 ${stats.today_count || 0} 条 · 值得看 ${stats.worth_count || 0} 条 · 已反馈 ${stats.feedback_count || 0} 条`;
+    const zhihuBtn = $('#trends-platform-filter [data-platform="zhihu"]');
+    const zhihuStatus = stats.platform_status?.zhihu;
+    if (zhihuBtn && zhihuStatus?.available === false) {
+      zhihuBtn.textContent = "知乎 · 暂不可用";
+      zhihuBtn.disabled = true;
+      zhihuBtn.classList.add("unavailable");
+    } else if (zhihuBtn) {
+      zhihuBtn.textContent = "知乎";
+      zhihuBtn.disabled = false;
+      zhihuBtn.classList.remove("unavailable");
+    }
   } catch (err) { box.innerHTML = ""; box.appendChild(makeFeedEmpty("⚠️", err.message || "热点加载失败")); }
 }
 
@@ -5270,7 +5281,7 @@ function buildTrendCard(item) {
 
 async function refreshTrends() {
   const btn = $("#trends-refresh-btn"); btn.disabled = true; btn.textContent = "刷新中…";
-  try { const res = await fetchJson("/api/trends/refresh", {method: "POST"}); const failed = (res.data?.results || []).filter((item) => item.error); toast(failed.length ? `刷新完成，${failed.length} 个平台失败` : `刷新完成，新增 ${res.data?.total_added || 0} 条`, failed.length ? "warning" : "success"); await loadTrends(); }
+  try { const res = await fetchJson("/api/trends/refresh", {method: "POST"}); const failed = (res.data?.results || []).filter((item) => item.error && !item.optional); toast(failed.length ? `刷新完成，${failed.length} 个平台失败` : `刷新完成，新增 ${res.data?.total_added || 0} 条`, failed.length ? "warning" : "success"); await loadTrends(); }
   catch (err) { toast(err.message || "刷新失败", "error"); }
   finally { btn.disabled = false; btn.textContent = "刷新热点"; }
 }
