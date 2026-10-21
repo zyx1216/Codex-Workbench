@@ -3,17 +3,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
 import threading
 import time
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 BILIBILI_API = "https://api.bilibili.com"
 BILIBILI_SPACE = "https://space.bilibili.com"
 BILIBILI_VIDEO = "https://www.bilibili.com/video"
+RSSHUB_INSTANCES = [
+    "https://rsshub.app",
+    "https://rsshub.rssforever.com",
+    "https://rsshub.pseudoyu.com",
+    "https://rsshub.netlib.re",
+]
+RSSHUB_TIMEOUT = 10.0
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -45,24 +52,14 @@ REQUEST_INTERVAL = 2.0
 RATE_LIMIT_FIRST_WAIT = 10.0
 RATE_LIMIT_SECOND_WAIT = 900.0
 RATE_LIMIT_THIRD_WAIT = 3600.0
-WBI_CACHE_TTL = 3600.0
 FEEDBACK_LIMIT = 20
 AI_REASON_LIMIT = 30
-WBI_MIXIN_KEY_ENC_TAB = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
-]
-
 _refresh_lock = threading.Lock()
 _validate_lock = threading.Lock()
 _request_lock = threading.Lock()
 _last_request_at = 0.0
 _rate_limited_until = 0.0
 _rate_limit_streak = 0
-_wbi_cache: tuple[str, str, float] | None = None
-_wbi_lock = threading.Lock()
 
 
 class BilibiliError(Exception):
@@ -215,7 +212,7 @@ def _get_json(url, params=None, *, allow_codes=(0,), referer=None):
 
 
 def _get_html(url: str, referer: str | None = None) -> str:
-    """获取 B站 HTML，用于 WBI 校验失败后的降级解析。"""
+    """获取 B站 HTML，用于字幕或公开页面降级解析。"""
     _ensure_not_rate_limited()
     _throttle()
     headers = dict(REQUEST_HEADERS)
@@ -234,69 +231,6 @@ def _get_html(url: str, referer: str | None = None) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning("B站 HTML 请求失败 url=%s error=%s", url, exc)
         raise BilibiliError(f"B站页面请求失败：{exc}") from exc
-
-
-def _extract_wbi_key(url: str) -> str:
-    name = Path(urlparse(str(url or "")).path).name
-    return name.rsplit(".", 1)[0] if "." in name else name
-
-
-def _mixin_key(img_key: str, sub_key: str) -> str:
-    raw = f"{img_key}{sub_key}"
-    return "".join(raw[index] for index in WBI_MIXIN_KEY_ENC_TAB)[:32]
-
-
-def _get_wbi_keys(force: bool = False) -> tuple[str, str]:
-    """获取并缓存 WBI 密钥，缓存 1 小时；-352 时可强制刷新。"""
-    global _wbi_cache
-    with _wbi_lock:
-        now = time.monotonic()
-        if not force and _wbi_cache and _wbi_cache[2] > now:
-            return _wbi_cache[0], _wbi_cache[1]
-    payload = _get_json(f"{BILIBILI_API}/x/web-interface/nav", allow_codes=(0, -101))
-    data = payload.get("data") or {}
-    wbi_img = data.get("wbi_img") or {}
-    img_key = _extract_wbi_key(wbi_img.get("img_url", ""))
-    sub_key = _extract_wbi_key(wbi_img.get("sub_url", ""))
-    if not img_key or not sub_key:
-        raise BilibiliError("B站未返回 WBI 密钥")
-    with _wbi_lock:
-        _wbi_cache = (img_key, sub_key, time.monotonic() + WBI_CACHE_TTL)
-    logger.info("WBI 密钥已更新 img_key=%s sub_key=%s", img_key[:6], sub_key[:6])
-    return img_key, sub_key
-
-
-def _clear_wbi_cache() -> None:
-    global _wbi_cache
-    with _wbi_lock:
-        _wbi_cache = None
-
-
-def _sign_wbi_params(params: dict[str, Any]) -> dict[str, Any]:
-    img_key, sub_key = _get_wbi_keys()
-    signed = dict(params)
-    signed["wts"] = int(time.time())
-    cleaned = []
-    for key, value in signed.items():
-        text = re.sub(r"[!'()*]", "", str(value))
-        cleaned.append((key, text))
-    cleaned.sort(key=lambda item: item[0])
-    query = urlencode(cleaned, quote_via=quote, safe="")
-    mixin = _mixin_key(img_key, sub_key)
-    signed["w_rid"] = hashlib.md5(f"{query}{mixin}".encode("utf-8")).hexdigest()
-    logger.debug("WBI 签名 mixin_key=%s wts=%s query=%s w_rid=%s", mixin, signed["wts"], query, signed["w_rid"])
-    return signed
-
-
-def _get_signed_json(url: str, params: dict[str, Any], referer: str) -> dict[str, Any]:
-    try:
-        return _get_json(url, _sign_wbi_params(params), allow_codes=(0,), referer=referer)
-    except BilibiliError as exc:
-        if exc.code != -352:
-            raise
-        logger.warning("WBI 签名校验失败，刷新密钥后重试一次：%s", exc)
-        _clear_wbi_cache()
-        return _get_json(url, _sign_wbi_params(params), allow_codes=(0,), referer=referer)
 
 
 def fetch_creator_info(uid: str) -> dict[str, Any]:
@@ -347,62 +281,68 @@ def _video_from_search_item(item: dict[str, Any], uid: str) -> dict[str, Any]:
     }
 
 
-def _videos_from_html(uid: str) -> list[dict[str, Any]]:
-    """WBI 仍失败时，从空间页提取最近视频标题和 BV 号。"""
-    html = _get_html(f"{BILIBILI_SPACE}/{uid}/video", referer=f"{BILIBILI_SPACE}/{uid}")
-    soup = BeautifulSoup(html, "html.parser")
-    items: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for link in soup.find_all("a", href=True):
-        match = re.search(r"(BV[0-9A-Za-z]+)", link.get("href", ""))
+def _parse_rsshub_items(xml_text: str, uid: str) -> list[dict[str, Any]]:
+    """解析 RSSHub RSS/XML，只保留包含 BV 号的视频条目。"""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise BilibiliError(f"RSSHub XML 解析失败：{exc}") from exc
+    items = root.findall(".//item") or root.findall(".//entry")
+    result: list[dict[str, Any]] = []
+    for item in items:
+        link_node = item.find("link")
+        link = (link_node.text or "") if link_node is not None else ""
+        if not link:
+            link = link_node.get("href", "") if link_node is not None else ""
+        match = re.search(r"(BV[0-9A-Za-z]+)", link or "")
         if not match:
             continue
-        bvid = match.group(1)
-        if bvid in seen:
-            continue
-        title = link.get_text(" ", strip=True)
-        if not title:
-            continue
-        seen.add(bvid)
-        items.append({"bvid": bvid, "uid": uid, "title": title[:500], "description": "", "publish_time": None, "duration": 0, "play": 0, "like": 0, "coin": 0, "favorite": 0, "comment": 0, "share": 0, "cover": ""})
-        if len(items) >= 10:
-            break
-    return items
+        title_node = item.find("title")
+        desc_node = item.find("description")
+        if desc_node is None:
+            desc_node = item.find("summary")
+        date_node = item.find("pubDate")
+        if date_node is None:
+            date_node = item.find("published")
+        if date_node is None:
+            date_node = item.find("updated")
+        title = (title_node.text or "无标题").strip() if title_node is not None else "无标题"
+        description = (desc_node.text or "") if desc_node is not None else ""
+        description = BeautifulSoup(description, "html.parser").get_text(" ", strip=True)[:3000]
+        publish_time = None
+        if date_node is not None and date_node.text:
+            try:
+                parsed = parsedate_to_datetime(date_node.text.strip())
+                publish_time = parsed.replace(tzinfo=None)
+            except (TypeError, ValueError):
+                try:
+                    publish_time = datetime.fromisoformat(date_node.text.strip().replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    publish_time = None
+        result.append({
+            "bvid": match.group(1), "uid": uid, "title": title[:500], "description": description,
+            "publish_time": publish_time, "duration": 0, "play": 0, "like": 0, "coin": 0,
+            "favorite": 0, "comment": 0, "share": 0, "cover": "", "cid": None, "pages": [],
+            "is_valid": True, "invalid_reason": "",
+        })
+    return result
 
 
 def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
-    """旧接口优先，失败再用 WBI，最后降级 HTML。"""
-    legacy_url = f"{BILIBILI_API}/x/space/arc/search"
-    try:
-        payload = _get_json(legacy_url, params={"mid": uid, "ps": 10, "pn": 1, "order": "pubdate"}, referer=f"{BILIBILI_SPACE}/{uid}")
-        data = payload.get("data") or {}
-        video_list = ((data.get("list") or {}).get("vlist")) or []
-        logger.debug("B站视频接口来源=legacy uid=%s count=%s", uid, len(video_list))
-        return [_video_from_search_item(item, uid) for item in video_list if isinstance(item, dict) and item.get("bvid")]
-    except BilibiliRateLimited:
-        raise
-    except BilibiliError as exc:
-        logger.warning("旧版接口失败，尝试 WBI：%s", exc)
-
-    try:
-        payload = _get_signed_json(f"{BILIBILI_API}/x/space/wbi/arc/search", {"mid": uid, "ps": 10, "pn": 1, "order": "pubdate"}, referer=f"{BILIBILI_SPACE}/{uid}")
-        data = payload.get("data") or {}
-        video_list = ((data.get("list") or {}).get("vlist")) or []
-        logger.debug("B站视频接口来源=wbi uid=%s count=%s", uid, len(video_list))
-        return [_video_from_search_item(item, uid) for item in video_list if isinstance(item, dict) and item.get("bvid")]
-    except BilibiliRateLimited:
-        raise
-    except BilibiliError as exc:
-        logger.warning("WBI 接口失败，降级 HTML：%s", exc)
-    try:
-        items = _videos_from_html(uid)
-        logger.debug("B站视频接口来源=html uid=%s count=%s", uid, len(items))
-        return items
-    except BilibiliRateLimited:
-        raise
-    except BilibiliError as exc:
-        logger.warning("HTML 降级也失败，本轮无新增视频：%s", exc)
-        return []
+    """通过 RSSHub 多实例获取 UP 主最新视频，失败时返回中文业务错误。"""
+    last_error = ""
+    for base in RSSHUB_INSTANCES:
+        url = f"{base.rstrip('/')}/bilibili/user/dynamic/{uid}"
+        try:
+            response = httpx.get(url, headers=REQUEST_HEADERS, timeout=RSSHUB_TIMEOUT, follow_redirects=True)
+            response.raise_for_status()
+            items = _parse_rsshub_items(response.text, uid)
+            logger.info("RSSHub 视频列表成功 instance=%s uid=%s count=%s", base, uid, len(items))
+            return items
+        except (httpx.HTTPError, BilibiliError, ValueError) as exc:
+            last_error = str(exc)
+            logger.warning("RSSHub 实例失败 instance=%s uid=%s error=%s", base, uid, exc)
+    raise BilibiliError(f"RSSHub暂时不可用，请稍后再试：{last_error}")
 
 
 def fetch_video_detail(bvid: str, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -702,17 +642,17 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
         is_new = video is None
         need_detail = is_new or video.last_validated_at is None or video.last_validated_at < stale_before or not video.is_valid
         detail: dict[str, Any] = item
+        detail_received = False
         if need_detail:
             try:
                 detail = fetch_video_detail(bvid, item)
+                detail_received = True
                 time.sleep(0.5)
             except BilibiliRateLimited as exc:
-                logger.warning("视频有效性验证限流，跳过本次验证 bvid=%s", bvid)
+                logger.warning("视频详情限流，先入库基本信息 bvid=%s", bvid)
                 errors.append(str(exc))
-                detail = item
             except BilibiliError as exc:
-                logger.warning("视频有效性验证失败 bvid=%s：%s", bvid, exc)
-                detail = item
+                logger.warning("视频详情失败，先入库基本信息 bvid=%s：%s", bvid, exc)
 
         if is_new:
             video = BilibiliVideo(
@@ -721,7 +661,7 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
                 like=detail["like"], coin=detail["coin"], favorite=detail["favorite"], comment=detail["comment"],
                 share=detail["share"], cover=detail["cover"], cid=detail.get("cid"),
                 is_valid=bool(detail.get("is_valid", True)), invalid_reason=detail.get("invalid_reason", ""),
-                last_validated_at=datetime.now() if need_detail else None,
+                last_validated_at=datetime.now() if detail_received else None,
             )
             session.add(video)
             new_videos.append(video)
@@ -730,7 +670,7 @@ def refresh_creator(session: Session, creator: BilibiliCreator) -> dict[str, Any
             for key in ("title", "description", "publish_time", "duration", "play", "like", "coin", "favorite", "comment", "share", "cover"):
                 if item.get(key) is not None:
                     setattr(video, key, item[key])
-            if need_detail:
+            if detail_received:
                 video.cid = detail.get("cid") or video.cid
                 video.is_valid = bool(detail.get("is_valid", video.is_valid))
                 video.invalid_reason = detail.get("invalid_reason", "") if not video.is_valid else ""
