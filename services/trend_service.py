@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.models import HotTrend
-from services import ai_service, note_service
+from services import ai_service, jina_service, note_service
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def serialize_trend(trend: HotTrend) -> dict[str, Any]:
         "title": trend.title, "url": trend.url, "heat": trend.heat,
         "ai_score": score, "decision": decision, "ai_reason": trend.ai_reason,
         "ai_category": trend.ai_category, "user_feedback": trend.user_feedback,
-        "note_id": trend.note_id, "created_at": trend.created_at.isoformat() if trend.created_at else None,
+        "note_id": trend.note_id, "content_fetched": bool(trend.content_fetched), "created_at": trend.created_at.isoformat() if trend.created_at else None,
         "fetched_date": trend.fetched_date,
     }
 
@@ -207,29 +207,72 @@ def generate_note(session: Session, trend_id: int) -> tuple[Any, bool]:
             return note_service.get_note_by_id(session, trend.note_id), False
         except note_service.NoteNotFound:
             trend.note_id = None
-    prompt = f"""请只根据下面的热榜信息生成中文热点笔记，不能编造新闻事实。
-输出 JSON：{{"background":"背景说明","impact":["可能影响"],"questions":["思考问题"]}}
+
+    article = jina_service.fetch_article_text(trend.url)
+    platform_name = PLATFORM_NAMES.get(trend.platform, trend.platform)
+    content_fetched = bool(article)
+    if article:
+        prompt = f"""请只根据下面的热点原文生成中文笔记，不能编造原文没有的信息。
+只输出 JSON，不要 Markdown：{{"summary":"一句话概括","core_points":["核心内容"],"knowledge_points":["知识点"],"quotes":["金句"],"actions":["行动清单"]}}
 标题：{trend.title}
-平台：{PLATFORM_NAMES.get(trend.platform, trend.platform)}
+平台：{platform_name}
+原文：
+{article[:8000]}
+"""
+        try:
+            raw = ai_service.chat(prompt)
+            payload = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip())
+            note_data = {
+                "summary": str(payload.get("summary") or "").strip()[:300],
+                "core_points": [str(item).strip() for item in payload.get("core_points", []) if str(item).strip()][:12],
+                "knowledge_points": [str(item).strip() for item in payload.get("knowledge_points", []) if str(item).strip()][:12],
+                "quotes": [str(item).strip() for item in payload.get("quotes", []) if str(item).strip()][:8],
+                "actions": [str(item).strip() for item in payload.get("actions", []) if str(item).strip()][:8],
+            }
+        except (ai_service.AiError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("热点笔记 AI 生成失败，使用原文摘要：%s", exc)
+            note_data = {"summary": article[:200], "core_points": [article[:800]], "knowledge_points": [], "quotes": [], "actions": []}
+    else:
+        prompt = f"""请只根据下面的热榜标题生成简短中文笔记，不能编造新闻事实。
+只输出 JSON，不要 Markdown：{{"summary":"一句话概括","core_points":["思考方向"],"knowledge_points":["知识点"],"quotes":[],"actions":["建议查看原文"]}}
+标题：{trend.title}
+平台：{platform_name}
 热度：{trend.heat}
 """
-    try:
-        raw = ai_service.chat(prompt)
-        payload = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip())
-        background = str(payload.get("background") or "").strip()
-        impact = [str(item).strip() for item in payload.get("impact", []) if str(item).strip()]
-        questions = [str(item).strip() for item in payload.get("questions", []) if str(item).strip()]
-    except (ai_service.AiError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.warning("热点笔记 AI 生成失败：%s", exc)
-        background, impact, questions = "", ["信息有限，建议查看原文"], ["这件事和我的学习/工作有什么关系？"]
-    content_lines = [
-        "> ⚠️ 未抓取原文，本笔记仅基于热榜标题、平台和热度生成。", "",
-        f"## 热点背景\n{background or trend.title}", "",
-        "## 可能影响\n" + "\n".join(f"- {item}" for item in impact), "",
-        "## 思考问题\n" + "\n".join(f"- {item}" for item in questions), "",
-        f"来源：[{trend.title}]({trend.url})",
-    ]
-    note = note_service.create_note(session, trend.title, "\n".join(content_lines), original_url=trend.url, tags=[trend.platform, "热点"], source="热点", category=trend.ai_category or PLATFORM_NAMES.get(trend.platform, "热点"))
+        try:
+            raw = ai_service.chat(prompt)
+            payload = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip())
+            note_data = {
+                "summary": str(payload.get("summary") or trend.title).strip()[:300],
+                "core_points": [str(item).strip() for item in payload.get("core_points", []) if str(item).strip()][:12],
+                "knowledge_points": [str(item).strip() for item in payload.get("knowledge_points", []) if str(item).strip()][:12],
+                "quotes": [str(item).strip() for item in payload.get("quotes", []) if str(item).strip()][:8],
+                "actions": [str(item).strip() for item in payload.get("actions", []) if str(item).strip()][:8],
+            }
+        except (ai_service.AiError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("热点标题笔记 AI 生成失败：%s", exc)
+            note_data = {"summary": trend.title, "core_points": ["信息有限，建议查看原文"], "knowledge_points": [], "quotes": [], "actions": ["阅读原文后再补充笔记"]}
+
+    def bullet(items: list[str], default: str = "- 暂无") -> str:
+        return "\n".join(f"- {item}" for item in items) or default
+
+    lines = []
+    if not content_fetched:
+        lines.extend(["> ⚠️ 未获取到原文，基于标题生成。", ""])
+    lines.extend([
+        "## 一句话概括", note_data["summary"], "",
+        "## 核心内容", bullet(note_data["core_points"]), "",
+        "## 关键知识点", bullet(note_data["knowledge_points"]), "",
+        "## 金句", bullet(note_data["quotes"]), "",
+        "## 行动清单", bullet(note_data["actions"]), "",
+        f"来源：{platform_name} {trend.url}",
+    ])
+    note = note_service.create_note(
+        session, trend.title, "\n".join(lines), original_url=trend.url,
+        tags=[trend.platform, "热点"], source="热点",
+        category=trend.ai_category or platform_name,
+    )
     trend.note_id = note.id
+    trend.content_fetched = content_fetched
     session.commit()
     return note, True

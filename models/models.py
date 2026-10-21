@@ -272,5 +272,6 @@ class HotTrend(Base):
     ai_category = Column(String(50), nullable=False, default="未分类", comment="AI 内容分类")
     user_feedback = Column(String(20), nullable=False, default="待确认", comment="用户反馈")
     note_id = Column(Integer, nullable=True, comment="生成的笔记 ID")
+    content_fetched = Column(Boolean, nullable=False, default=False, comment="生成笔记时是否成功获取原文")
     created_at = Column(DateTime, default=datetime.now, nullable=False, comment="抓取时间")
     fetched_date = Column(String(10), nullable=False, index=True, comment="抓取日期 YYYY-MM-DD")

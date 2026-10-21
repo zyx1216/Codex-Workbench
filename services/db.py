@@ -341,6 +341,17 @@ def _ensure_bilibili_video_columns() -> None:
             connection.execute(text("ALTER TABLE bilibili_videos ADD COLUMN last_validated_at DATETIME"))
 
 
+def _ensure_hot_trend_columns() -> None:
+    """给旧版 hot_trends 补 content_fetched 字段；幂等执行。"""
+    inspector = inspect(engine)
+    if "hot_trends" not in set(inspector.get_table_names()):
+        return
+    existing = {column["name"] for column in inspector.get_columns("hot_trends")}
+    with engine.begin() as connection:
+        if "content_fetched" not in existing:
+            connection.execute(text("ALTER TABLE hot_trends ADD COLUMN content_fetched BOOLEAN NOT NULL DEFAULT 0"))
+
+
 def init_db() -> None:
     """创建数据目录和所有数据表（幂等）。"""
     config.ensure_dirs()
@@ -353,6 +364,7 @@ def init_db() -> None:
     _ensure_rss_columns()
     _rebuild_pending_items_if_needed()
     _ensure_bilibili_video_columns()
+    _ensure_hot_trend_columns()
 
 
 def get_db():

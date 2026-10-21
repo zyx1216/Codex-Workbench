@@ -3509,3 +3509,5 @@ kbd {
 .trend-title:hover { color:var(--primary); }
 .trend-reason { color:var(--text-muted); font-size:13px; }
 .trend-stats { margin-top:16px; padding:12px 16px; color:var(--text-dim); text-align:center; }
+
+.trend-fetch-warning { padding:2px 8px; border-radius:999px; color:var(--text-dim); background:rgba(148,163,184,.14); }

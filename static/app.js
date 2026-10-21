@@ -5255,7 +5255,7 @@ function buildTrendCard(item) {
   const card = document.createElement("div");
   card.className = "card glass trend-card";
   const scoreClass = item.ai_score >= 70 ? "good" : (item.ai_score >= 40 ? "medium" : "bad");
-  card.innerHTML = `<div class="trend-head"><span>${escapeHtml(item.platform_name)}</span><span>热度 ${formatBilibiliCount(item.heat)}</span><span class="video-score ${scoreClass}">${item.ai_score}分</span></div><a class="trend-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="trend-reason">${escapeHtml(item.ai_reason || "暂无理由")} · ${escapeHtml(item.ai_category || "未分类")}</div>`;
+  card.innerHTML = `<div class="trend-head"><span>${escapeHtml(item.platform_name)}</span><span>热度 ${formatBilibiliCount(item.heat)}</span><span class="video-score ${scoreClass}">${item.ai_score}分</span>${item.note_id && !item.content_fetched ? '<span class="trend-fetch-warning">未抓原文</span>' : ''}</div><a class="trend-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="trend-reason">${escapeHtml(item.ai_reason || "暂无理由")} · ${escapeHtml(item.ai_category || "未分类")}</div>`;
   const actions = document.createElement("div"); actions.className = "video-actions";
   [["值得看", "👍 值得看"], ["不值得看", "👎 不值得看"], ["待确认", "⏭️ 待确认"]].forEach(([value, label]) => {
     const btn = makeButton(`btn btn-ghost btn-sm ${item.user_feedback === value ? "active" : ""}`, label);
@@ -5263,7 +5263,7 @@ function buildTrendCard(item) {
   });
   const noteBtn = makeButton("btn btn-primary btn-sm", item.note_id ? "✅ 已生成笔记" : "📝 生成笔记");
   noteBtn.disabled = Boolean(item.note_id);
-  noteBtn.addEventListener("click", () => generateTrendNote(item.id)); actions.appendChild(noteBtn);
+  noteBtn.addEventListener("click", () => generateTrendNote(item.id, noteBtn)); actions.appendChild(noteBtn);
   card.appendChild(actions); return card;
 }
 
@@ -5278,6 +5278,18 @@ async function submitTrendFeedback(id, feedback) {
   try { await fetchJson(`/api/trends/${id}/feedback`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({feedback})}); toast("反馈已保存", "success"); await loadTrends(); } catch (err) { toast(err.message || "反馈失败", "error"); }
 }
 
-async function generateTrendNote(id) {
-  try { const res = await fetchJson(`/api/trends/${id}/generate-note`, {method: "POST"}); toast(res.message || "笔记已生成", "success"); await loadTrends(); } catch (err) { toast(err.message || "生成失败", "error"); }
+async function generateTrendNote(id, button) {
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = "抓取原文中...";
+  try {
+    const res = await fetchJson(`/api/trends/${id}/generate-note`, {method: "POST"});
+    toast(res.message || "笔记已生成", "success");
+    await loadTrends();
+  } catch (err) {
+    toast(err.message || "生成失败", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = oldText;
+  }
 }
