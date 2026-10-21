@@ -23,7 +23,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v3.2.1</div>
+    <div class="sidebar-version">v3.2.2</div>
   </aside>
 
   <main class="main">
@@ -205,6 +205,26 @@
         </div>
         <div id="video-list" class="video-list"></div>
       </div>
+    </section>
+
+    <!-- 热点聚合 -->
+    <section class="tab" data-tab="trends">
+      <h2 class="section-title gradient-text">热点</h2>
+      <div class="card glass trend-toolbar">
+        <button class="btn btn-primary" id="trends-refresh-btn" type="button">刷新热点</button>
+        <div class="segmented" id="trends-platform-filter" role="group" aria-label="热点平台">
+          <button type="button" class="segmented-btn active" data-platform="">全部</button>
+          <button type="button" class="segmented-btn" data-platform="bilibili">B站</button>
+          <button type="button" class="segmented-btn" data-platform="zhihu">知乎</button>
+          <button type="button" class="segmented-btn" data-platform="weibo">微博</button>
+        </div>
+        <div class="segmented" id="trends-quality-filter" role="group" aria-label="热点筛选">
+          <button type="button" class="segmented-btn active" data-quality="all">全部</button>
+          <button type="button" class="segmented-btn" data-quality="worth">值得看</button>
+        </div>
+      </div>
+      <div id="trends-list" class="trend-list"></div>
+      <div class="card glass trend-stats" id="trends-stats">今日抓取 0 条 · 值得看 0 条 · 已反馈 0 条</div>
     </section>
 
     <!-- AI 助手 -->

@@ -32,7 +32,6 @@ function initTabs() {
         loadRecentNotes();
         loadHomeTaskPanels();
         loadHomeSchedules();
-  loadTrends();
       } else if (target === "qa") {
         loadVectorStats();
       } else if (target === "tasks") {
@@ -5222,21 +5221,23 @@ let trendPlatform = "";
 let trendQuality = "all";
 
 function bindTrendsPage() {
-  $("#btn-refresh-trends").addEventListener("click", refreshTrends);
-  $$("#trend-platform-filter .segmented-btn").forEach((btn) => btn.addEventListener("click", () => {
+  const refreshBtn = $("#trends-refresh-btn");
+  if (!refreshBtn) return;
+  refreshBtn.addEventListener("click", refreshTrends);
+  $$("#trends-platform-filter .segmented-btn").forEach((btn) => btn.addEventListener("click", () => {
     trendPlatform = btn.dataset.platform;
-    $$("#trend-platform-filter .segmented-btn").forEach((item) => item.classList.toggle("active", item === btn));
+    $$("#trends-platform-filter .segmented-btn").forEach((item) => item.classList.toggle("active", item === btn));
     loadTrends();
   }));
-  $$("#trend-quality-filter .segmented-btn").forEach((btn) => btn.addEventListener("click", () => {
+  $$("#trends-quality-filter .segmented-btn").forEach((btn) => btn.addEventListener("click", () => {
     trendQuality = btn.dataset.quality;
-    $$("#trend-quality-filter .segmented-btn").forEach((item) => item.classList.toggle("active", item === btn));
+    $$("#trends-quality-filter .segmented-btn").forEach((item) => item.classList.toggle("active", item === btn));
     loadTrends();
   }));
 }
 
 async function loadTrends() {
-  const box = $("#trend-list");
+  const box = $("#trends-list");
   try {
     const params = new URLSearchParams();
     if (trendPlatform) params.set("platform", trendPlatform);
@@ -5247,7 +5248,7 @@ async function loadTrends() {
     if (!items.length) box.appendChild(makeFeedEmpty("🔥", "暂无热点，点击刷新抓取"));
     items.forEach((item) => box.appendChild(buildTrendCard(item)));
     const stats = statsRes.data || {};
-    $("#trend-stats").textContent = `今日抓取 ${stats.today_count || 0} 条 · 值得看 ${stats.worth_count || 0} 条 · 已反馈 ${stats.feedback_count || 0} 条`;
+    $("#trends-stats").textContent = `今日抓取 ${stats.today_count || 0} 条 · 值得看 ${stats.worth_count || 0} 条 · 已反馈 ${stats.feedback_count || 0} 条`;
   } catch (err) { box.innerHTML = ""; box.appendChild(makeFeedEmpty("⚠️", err.message || "热点加载失败")); }
 }
 
@@ -5268,7 +5269,7 @@ function buildTrendCard(item) {
 }
 
 async function refreshTrends() {
-  const btn = $("#btn-refresh-trends"); btn.disabled = true; btn.textContent = "刷新中…";
+  const btn = $("#trends-refresh-btn"); btn.disabled = true; btn.textContent = "刷新中…";
   try { const res = await fetchJson("/api/trends/refresh", {method: "POST"}); const failed = (res.data?.results || []).filter((item) => item.error); toast(failed.length ? `刷新完成，${failed.length} 个平台失败` : `刷新完成，新增 ${res.data?.total_added || 0} 条`, failed.length ? "warning" : "success"); await loadTrends(); }
   catch (err) { toast(err.message || "刷新失败", "error"); }
   finally { btn.disabled = false; btn.textContent = "刷新热点"; }
