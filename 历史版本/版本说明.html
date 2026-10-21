@@ -859,6 +859,7 @@
       <tr><td class="ver">个人工作台 v3.1.0</td><td class="time">2026-10-21 11:08</td><td><span class="tag">RSSHub</span><span class="tag">架构调整</span><b>B站跟踪改用 RSSHub</b>：<ul><li>删除 WBI 签名、密钥缓存和旧视频列表接口链路。</li><li>主实例失败依次尝试三个 RSSHub 备选实例，10 秒超时。</li><li>保留 B站详情补全、字幕、失效验证、AI 筛选、反馈、爆款分析和 Obsidian 导出。</li></ul></td></tr>
       <tr><td class="ver">个人工作台 v3.1.1</td><td class="time">2026-10-21 11:15</td><td><span class="tag">RSSHub</span><span class="tag">自定义实例</span><b>RSSHub 实例扩充</b>：<ul><li>默认实例扩充为 6 个，按顺序回退，每个超时 15 秒。</li><li>设置页新增自定义 RSSHub 实例，优先尝试用户本地实例。</li><li>新增 RSSHub 配置 API，非法地址返回中文错误。</li></ul></td></tr>
       <tr><td class="ver">个人工作台 v3.2.0</td><td class="time">2026-10-21 11:48</td><td><span class="tag">热榜聚合</span><span class="tag">AI筛选</span><b>多平台热榜聚合</b>：<ul><li>聚合 B站、知乎、微博热榜，单平台失败自动跳过。</li><li>热点 AI 打分、分类、理由、反馈和统计。</li><li>支持热点一键生成笔记并关联来源，每天 08:00 自动刷新。</li></ul></td></tr>
+      <tr><td class="ver">个人工作台 v3.2.1</td><td class="time">2026-10-21 11:56</td><td><span class="tag">Jina Reader</span><span class="tag">热点笔记</span><b>Jina Reader 接入热点笔记</b>：<ul><li>热点生成笔记先通过 Jina Reader 抓取原文，失败静默降级。</li><li>原文成功时生成详细笔记并记录 content_fetched；失败时显示未抓原文警告。</li><li>Jina 正文限制 8000 字，新增请求耗时、长度和错误日志。</li></ul></td></tr>
     </tbody>
   </table>
 
