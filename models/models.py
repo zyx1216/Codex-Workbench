@@ -6,7 +6,7 @@ JSON 字段统一用 Text 存 JSON 字符串，不依赖 SQLite 原生 JSON 类�
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -250,3 +250,27 @@ class BilibiliVideo(Base):
     note_exported = Column(Boolean, nullable=False, default=False, comment="是否已导出 Obsidian 笔记")
     exported_path = Column(String(500), nullable=False, default="", comment="导出文件路径")
     created_at = Column(DateTime, default=datetime.now, nullable=False, comment="入库时间")
+
+
+class HotTrend(Base):
+    """多平台热点聚合表。"""
+
+    __tablename__ = "hot_trends"
+    __table_args__ = (
+        UniqueConstraint("platform", "title", "fetched_date", name="uq_hot_trends_platform_title_date"),
+        CheckConstraint("ai_score IS NULL OR (ai_score >= 0 AND ai_score <= 100)", name="ck_hot_trends_ai_score"),
+        CheckConstraint("user_feedback IN ('待确认', '值得看', '不值得看')", name="ck_hot_trends_feedback"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform = Column(String(20), nullable=False, index=True, comment="bilibili/zhihu/weibo")
+    title = Column(String(500), nullable=False, comment="热点标题")
+    url = Column(String(1000), nullable=False, default="", comment="原文或搜索链接")
+    heat = Column(Integer, nullable=False, default=0, comment="热度值")
+    ai_score = Column(Integer, nullable=True, comment="AI 推荐分 0-100")
+    ai_reason = Column(String(300), nullable=False, default="", comment="AI 推荐理由")
+    ai_category = Column(String(50), nullable=False, default="未分类", comment="AI 内容分类")
+    user_feedback = Column(String(20), nullable=False, default="待确认", comment="用户反馈")
+    note_id = Column(Integer, nullable=True, comment="生成的笔记 ID")
+    created_at = Column(DateTime, default=datetime.now, nullable=False, comment="抓取时间")
+    fetched_date = Column(String(10), nullable=False, index=True, comment="抓取日期 YYYY-MM-DD")

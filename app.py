@@ -37,6 +37,7 @@ from services import (
     schedule_service,
     scheduler_service,
     task_service,
+    trend_service,
     async_task_service,
     vector_service,
 )
@@ -84,6 +85,12 @@ class RsshubConfigRequest(BaseModel):
     """RSSHub 自定义实例请求体。"""
 
     custom_instance: str = ""
+
+
+class TrendFeedbackRequest(BaseModel):
+    """热点反馈请求体。"""
+
+    feedback: str
 
 
 class ProcessUrlRequest(BaseModel):
@@ -914,6 +921,40 @@ def delete_pending(item_id: int, db: Session = Depends(get_db)):
     except rss_service.PendingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ok(None, message="待处理项已删除")
+
+
+# ============ v3.2：多平台热榜聚合 ============
+@app.get("/api/trends")
+def get_trends(platform: str = Query(default=""), quality: str = Query(default="all"), feedback: str = Query(default=""), db: Session = Depends(get_db)):
+    return ok([trend_service.serialize_trend(item) for item in trend_service.list_trends(db, platform, quality, feedback)])
+
+
+@app.get("/api/trends/stats")
+def get_trend_stats(db: Session = Depends(get_db)):
+    return ok(trend_service.get_stats(db))
+
+
+@app.post("/api/trends/refresh")
+def refresh_trends(db: Session = Depends(get_db)):
+    return ok(trend_service.refresh_trends(db), message="热点刷新完成")
+
+
+@app.post("/api/trends/{trend_id}/feedback")
+def post_trend_feedback(trend_id: int, payload: TrendFeedbackRequest, db: Session = Depends(get_db)):
+    try:
+        item = trend_service.set_feedback(db, trend_id, payload.feedback)
+    except trend_service.TrendError as exc:
+        return fail(str(exc))
+    return ok(trend_service.serialize_trend(item), message="反馈已保存")
+
+
+@app.post("/api/trends/{trend_id}/generate-note")
+def generate_trend_note(trend_id: int, db: Session = Depends(get_db)):
+    try:
+        note, created = trend_service.generate_note(db, trend_id)
+    except trend_service.TrendError as exc:
+        return fail(str(exc))
+    return ok({"note_id": note.id, "created": created, "note": note_service.serialize_note(note)}, message="热点笔记已生成" if created else "已存在关联笔记")
 
 
 # ============ 后台任务、缓存和批量处理 ============

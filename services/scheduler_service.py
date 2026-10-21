@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 import config
 from models.models import FetchLog
-from services import bilibili_service, rss_service
+from services import bilibili_service, rss_service, trend_service
 from services.db import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # 每日任务固定 ID，更新时间时直接替换
 JOB_ID = "daily_rss_fetch"
 BILIBILI_JOB_ID = "daily_bilibili_refresh"
+TREND_JOB_ID = "daily_trend_refresh"
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 # 防止手动任务和定时任务同时跑两批全量抓取
@@ -212,6 +213,19 @@ def _apply_bilibili_job() -> None:
         coalesce=True,
         misfire_grace_time=3600,
     )
+
+
+def _trend_scheduled_job() -> None:
+    try:
+        with SessionLocal() as session:
+            result = trend_service.refresh_trends(session)
+        logger.info("热点定时刷新完成，新增 %s 条", result.get("total_added", 0))
+    except Exception:
+        logger.exception("热点定时刷新失败")
+
+
+def _apply_trend_job() -> None:
+    _scheduler.add_job(_trend_scheduled_job, trigger=CronTrigger(hour=8, minute=0, timezone="Asia/Shanghai"), id=TREND_JOB_ID, replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=3600)
 
 
 def start_scheduler() -> None:

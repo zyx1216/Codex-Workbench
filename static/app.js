@@ -32,12 +32,15 @@ function initTabs() {
         loadRecentNotes();
         loadHomeTaskPanels();
         loadHomeSchedules();
+  loadTrends();
       } else if (target === "qa") {
         loadVectorStats();
       } else if (target === "tasks") {
         loadUserTasks();
       } else if (target === "calendar") {
         loadCalendarMonth();
+      } else if (target === "trends") {
+        loadTrends();
       } else if (target === "async-tasks") {
         loadTaskList();
       }
@@ -4795,7 +4798,8 @@ function initShortcuts() {
     } else if (/^[1-8]$/.test(key)) {
       event.preventDefault();
       const index = Number(key) - 1;
-      const button = $$(".sidebar .nav-btn")[index];
+      const shortcutTabs = ["home", "calendar", "tasks", "notes", "qa", "feed", "async-tasks", "settings"];
+      const button = $(`.sidebar .nav-btn[data-tab="${shortcutTabs[index]}"]`);
       button?.click();
     } else if (key === "f" && currentTabName() === "notes") {
       event.preventDefault();
@@ -4833,6 +4837,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSettings();
   bindUploadModal();
   bindFeedPage();
+  bindTrendsPage();
   bindQaPage();
   bindTaskCenter();
   bindTaskPage();
@@ -5209,4 +5214,70 @@ async function exportSelectedBilibiliVideos(confirmed = false) {
     await loadBilibiliVideos();
   } catch (err) { toast(err.message || "批量导出失败", "error"); }
   finally { btn.disabled = false; btn.textContent = oldText; }
+}
+
+
+/* ============ v3.2 多平台热点 ============ */
+let trendPlatform = "";
+let trendQuality = "all";
+
+function bindTrendsPage() {
+  $("#btn-refresh-trends").addEventListener("click", refreshTrends);
+  $$("#trend-platform-filter .segmented-btn").forEach((btn) => btn.addEventListener("click", () => {
+    trendPlatform = btn.dataset.platform;
+    $$("#trend-platform-filter .segmented-btn").forEach((item) => item.classList.toggle("active", item === btn));
+    loadTrends();
+  }));
+  $$("#trend-quality-filter .segmented-btn").forEach((btn) => btn.addEventListener("click", () => {
+    trendQuality = btn.dataset.quality;
+    $$("#trend-quality-filter .segmented-btn").forEach((item) => item.classList.toggle("active", item === btn));
+    loadTrends();
+  }));
+}
+
+async function loadTrends() {
+  const box = $("#trend-list");
+  try {
+    const params = new URLSearchParams();
+    if (trendPlatform) params.set("platform", trendPlatform);
+    if (trendQuality) params.set("quality", trendQuality);
+    const [itemsRes, statsRes] = await Promise.all([fetchJson(`/api/trends?${params}`), fetchJson("/api/trends/stats")]);
+    const items = itemsRes.data || [];
+    box.innerHTML = "";
+    if (!items.length) box.appendChild(makeFeedEmpty("🔥", "暂无热点，点击刷新抓取"));
+    items.forEach((item) => box.appendChild(buildTrendCard(item)));
+    const stats = statsRes.data || {};
+    $("#trend-stats").textContent = `今日抓取 ${stats.today_count || 0} 条 · 值得看 ${stats.worth_count || 0} 条 · 已反馈 ${stats.feedback_count || 0} 条`;
+  } catch (err) { box.innerHTML = ""; box.appendChild(makeFeedEmpty("⚠️", err.message || "热点加载失败")); }
+}
+
+function buildTrendCard(item) {
+  const card = document.createElement("div");
+  card.className = "card glass trend-card";
+  const scoreClass = item.ai_score >= 70 ? "good" : (item.ai_score >= 40 ? "medium" : "bad");
+  card.innerHTML = `<div class="trend-head"><span>${escapeHtml(item.platform_name)}</span><span>热度 ${formatBilibiliCount(item.heat)}</span><span class="video-score ${scoreClass}">${item.ai_score}分</span></div><a class="trend-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="trend-reason">${escapeHtml(item.ai_reason || "暂无理由")} · ${escapeHtml(item.ai_category || "未分类")}</div>`;
+  const actions = document.createElement("div"); actions.className = "video-actions";
+  [["值得看", "👍 值得看"], ["不值得看", "👎 不值得看"], ["待确认", "⏭️ 待确认"]].forEach(([value, label]) => {
+    const btn = makeButton(`btn btn-ghost btn-sm ${item.user_feedback === value ? "active" : ""}`, label);
+    btn.addEventListener("click", () => submitTrendFeedback(item.id, value)); actions.appendChild(btn);
+  });
+  const noteBtn = makeButton("btn btn-primary btn-sm", item.note_id ? "✅ 已生成笔记" : "📝 生成笔记");
+  noteBtn.disabled = Boolean(item.note_id);
+  noteBtn.addEventListener("click", () => generateTrendNote(item.id)); actions.appendChild(noteBtn);
+  card.appendChild(actions); return card;
+}
+
+async function refreshTrends() {
+  const btn = $("#btn-refresh-trends"); btn.disabled = true; btn.textContent = "刷新中…";
+  try { const res = await fetchJson("/api/trends/refresh", {method: "POST"}); const failed = (res.data?.results || []).filter((item) => item.error); toast(failed.length ? `刷新完成，${failed.length} 个平台失败` : `刷新完成，新增 ${res.data?.total_added || 0} 条`, failed.length ? "warning" : "success"); await loadTrends(); }
+  catch (err) { toast(err.message || "刷新失败", "error"); }
+  finally { btn.disabled = false; btn.textContent = "刷新热点"; }
+}
+
+async function submitTrendFeedback(id, feedback) {
+  try { await fetchJson(`/api/trends/${id}/feedback`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({feedback})}); toast("反馈已保存", "success"); await loadTrends(); } catch (err) { toast(err.message || "反馈失败", "error"); }
+}
+
+async function generateTrendNote(id) {
+  try { const res = await fetchJson(`/api/trends/${id}/generate-note`, {method: "POST"}); toast(res.message || "笔记已生成", "success"); await loadTrends(); } catch (err) { toast(err.message || "生成失败", "error"); }
 }
