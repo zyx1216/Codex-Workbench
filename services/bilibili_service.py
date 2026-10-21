@@ -10,6 +10,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -32,11 +33,14 @@ BILIBILI_SPACE = "https://space.bilibili.com"
 BILIBILI_VIDEO = "https://www.bilibili.com/video"
 RSSHUB_INSTANCES = [
     "https://rsshub.app",
+    "https://rsshub.karasu.moe",
+    "https://rsshub.gujiakai.top",
     "https://rsshub.rssforever.com",
     "https://rsshub.pseudoyu.com",
     "https://rsshub.netlib.re",
 ]
-RSSHUB_TIMEOUT = 10.0
+RSSHUB_TIMEOUT = 15.0
+RSSHUB_CONFIG_PATH = config.DATA_DIR / "rsshub_config.json"
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -281,6 +285,38 @@ def _video_from_search_item(item: dict[str, Any], uid: str) -> dict[str, Any]:
     }
 
 
+def get_custom_rsshub_instance() -> str:
+    """读取用户自定义 RSSHub 实例，不存在或损坏时返回空字符串。"""
+    try:
+        raw = json.loads(RSSHUB_CONFIG_PATH.read_text(encoding="utf-8"))
+        value = str(raw.get("custom_instance", "") or "").strip().rstrip("/")
+    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        return ""
+    return value
+
+
+def get_rsshub_instances() -> list[str]:
+    """返回自定义优先、默认实例去重后的完整尝试列表。"""
+    values = []
+    custom = get_custom_rsshub_instance()
+    if custom:
+        values.append(custom)
+    values.extend(RSSHUB_INSTANCES)
+    return list(dict.fromkeys(values))
+
+
+def save_custom_rsshub_instance(value: str) -> str:
+    """保存自定义实例；空值表示恢复默认，只允许 http/https。"""
+    value = str(value or "").strip().rstrip("/")
+    if value:
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise BilibiliError("RSSHub 实例地址必须以 http:// 或 https:// 开头")
+    config.ensure_dirs()
+    RSSHUB_CONFIG_PATH.write_text(json.dumps({"custom_instance": value}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return value
+
+
 def _parse_rsshub_items(xml_text: str, uid: str) -> list[dict[str, Any]]:
     """解析 RSSHub RSS/XML，只保留包含 BV 号的视频条目。"""
     try:
@@ -331,7 +367,7 @@ def _parse_rsshub_items(xml_text: str, uid: str) -> list[dict[str, Any]]:
 def fetch_creator_videos(uid: str) -> list[dict[str, Any]]:
     """通过 RSSHub 多实例获取 UP 主最新视频，失败时返回中文业务错误。"""
     last_error = ""
-    for base in RSSHUB_INSTANCES:
+    for base in get_rsshub_instances():
         url = f"{base.rstrip('/')}/bilibili/user/dynamic/{uid}"
         try:
             response = httpx.get(url, headers=REQUEST_HEADERS, timeout=RSSHUB_TIMEOUT, follow_redirects=True)

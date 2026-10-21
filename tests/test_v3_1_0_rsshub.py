@@ -49,7 +49,17 @@ class RsshubTests(unittest.TestCase):
         self.assertEqual(items[0]["bvid"], "BV1TEST001")
         self.assertEqual(len(calls), 2)
         self.assertIn("rsshub.app", calls[0])
-        self.assertIn("rssforever", calls[1])
+        self.assertIn("karasu", calls[1])
+
+    def test_custom_instance_is_tried_first(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(bilibili_service, "RSSHUB_CONFIG_PATH", Path(tmp) / "rsshub.json"):
+                bilibili_service.save_custom_rsshub_instance("http://127.0.0.1:1200/")
+                self.assertEqual(bilibili_service.get_rsshub_instances()[0], "http://127.0.0.1:1200")
+                self.assertEqual(len(bilibili_service.get_rsshub_instances()), 7)
 
     def test_all_rsshub_instances_fail_with_chinese_error(self):
         with patch.object(bilibili_service.httpx, "get", side_effect=httpx.ConnectError("失败")):

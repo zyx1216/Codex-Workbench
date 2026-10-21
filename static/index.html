@@ -22,7 +22,7 @@
       <button class="nav-btn" data-tab="async-tasks"><span class="nav-ico">🗂️</span>后台任务</button>
       <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span>设置</button>
     </nav>
-    <div class="sidebar-version">v3.1.0</div>
+    <div class="sidebar-version">v3.1.1</div>
   </aside>
 
   <main class="main">
@@ -352,6 +352,18 @@
         </div><div class="btn-row">
           <button class="btn btn-primary" id="btn-save">保存配置</button>
           <button class="btn btn-ghost" id="btn-test">测试连接</button>
+        </div>
+      </div>
+
+      <h2 class="section-title gradient-text">RSSHub 配置</h2>
+      <div class="card glass form-card">
+        <label class="field">
+          <span class="field-label">自定义 RSSHub 实例（可选）</span>
+          <input type="text" id="rsshub-custom-instance" class="input" placeholder="http://127.0.0.1:1200" />
+          <p class="hint">填写后优先尝试该地址，失败后继续尝试内置实例；清空可恢复默认。</p>
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-save-rsshub" type="button">保存 RSSHub 配置</button>
         </div>
       </div>
 

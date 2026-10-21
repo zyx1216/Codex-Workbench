@@ -80,6 +80,12 @@ class AIConfig(BaseModel):
     rerank_enabled: bool = False
     rerank_model: str = "doubao-rerank-32k"
 
+class RsshubConfigRequest(BaseModel):
+    """RSSHub 自定义实例请求体。"""
+
+    custom_instance: str = ""
+
+
 class ProcessUrlRequest(BaseModel):
     """链接或手动粘贴正文处理请求体。"""
 
@@ -392,6 +398,22 @@ def post_ai_config(payload: AIConfig):
     )
     message = "配置已保存，需要重建向量库" if rebuild_required else "配置已保存"
     return ok({"saved": True, "key_saved": key_saved, "rebuild_required": rebuild_required}, message=message)
+
+@app.get("/api/rsshub-config")
+def get_rsshub_config():
+    """读取自定义 RSSHub 实例和实际尝试列表。"""
+    return ok({"custom_instance": bilibili_service.get_custom_rsshub_instance(), "instances": bilibili_service.get_rsshub_instances()})
+
+
+@app.post("/api/rsshub-config")
+def save_rsshub_config(payload: RsshubConfigRequest):
+    """保存自定义 RSSHub 实例，空值恢复默认列表。"""
+    try:
+        custom = bilibili_service.save_custom_rsshub_instance(payload.custom_instance)
+    except bilibili_service.BilibiliError as exc:
+        return fail(str(exc))
+    return ok({"custom_instance": custom, "instances": bilibili_service.get_rsshub_instances()}, message="RSSHub 配置已保存")
+
 
 @app.post("/api/ai-test")
 def post_ai_test():

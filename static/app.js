@@ -2097,6 +2097,25 @@ function updateVectorConfigText() {
   const rerankText = rerank.closest(".field").querySelector(".switch-text");
   if (rerankText) rerankText.textContent = rerank.checked ? "开启" : "关闭";
 }
+async function loadRsshubConfig() {
+  try {
+    const res = await fetchJson("/api/rsshub-config");
+    $("#rsshub-custom-instance").value = res.data?.custom_instance || "";
+  } catch (_) { /* 设置页加载失败不打扰 */ }
+}
+
+async function saveRsshubConfig() {
+  try {
+    const res = await fetchJson("/api/rsshub-config", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({custom_instance: $("#rsshub-custom-instance").value.trim()}),
+    });
+    $("#rsshub-custom-instance").value = res.data?.custom_instance || "";
+    toast(res.message || "RSSHub 配置已保存", "success");
+  } catch (err) { toast(err.message || "RSSHub 配置保存失败", "error"); }
+}
+
 async function testConnection() {
   try {
     const res = await fetchJson("/api/ai-test", { method: "POST" });
@@ -2196,6 +2215,7 @@ async function loadSchedulerLogs() {
 function bindSettings() {
   $("#btn-save").addEventListener("click", saveConfig);
   $("#btn-test").addEventListener("click", testConnection);
+  $("#btn-save-rsshub").addEventListener("click", saveRsshubConfig);
   $("#scheduler-enabled").addEventListener("change", updateSwitchText);
   $("#embedding-use-local").addEventListener("change", updateVectorConfigText);
   $("#rerank-enabled").addEventListener("change", updateVectorConfigText);
@@ -4823,6 +4843,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadStats();
   loadRecentNotes();
   loadConfig();
+  loadRsshubConfig();
   loadSchedulerConfig();
   loadSchedulerLogs();
   loadVectorStats();
